@@ -1,5 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+import os
 from database import engine, Base
 from routers import workflows, requests, stages, approvals, analytics, auth
 
@@ -10,6 +12,12 @@ app = FastAPI(
     description="Folderit-style approval workflow engine with FastAPI + MySQL",
     version="1.0.0"
 )
+
+# Ensure uploads directory exists
+if not os.path.exists("uploads"):
+    os.makedirs("uploads")
+
+app.mount("/api/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 app.add_middleware(
     CORSMiddleware,

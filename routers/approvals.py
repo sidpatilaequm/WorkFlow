@@ -110,17 +110,36 @@ def take_action(
     if req.status != models.RequestStatus.pending:
         raise HTTPException(400, f"Request is already {req.status.value}")
 
-    # Find active stage
+    # Find active stage - robust lookup
     active_stage = (
         db.query(models.RequestStage)
         .filter(
             models.RequestStage.request_id == req.id,
-            models.RequestStage.stage_order == req.current_stage
+            models.RequestStage.stage_order == req.current_stage,
+            models.RequestStage.status == models.RequestStatus.pending
         )
         .first()
     )
+
+    # Self-healing: if no exact match, find the first pending stage that has started
     if not active_stage:
-        raise HTTPException(400, "No active stage found")
+        active_stage = (
+            db.query(models.RequestStage)
+            .filter(
+                models.RequestStage.request_id == req.id,
+                models.RequestStage.status == models.RequestStatus.pending,
+                models.RequestStage.started_at.isnot(None)
+            )
+            .order_by(models.RequestStage.stage_order)
+            .first()
+        )
+        # Sync current_stage if found
+        if active_stage:
+            req.current_stage = active_stage.stage_order
+            db.flush()
+
+    if not active_stage:
+        raise HTTPException(400, "No active stage found for this request")
 
     stage_def = db.query(models.WorkflowStage).filter(models.WorkflowStage.id == active_stage.stage_id).first()
 

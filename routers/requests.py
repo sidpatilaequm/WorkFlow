@@ -1,13 +1,40 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, File, UploadFile, Form
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 from datetime import datetime, timedelta
+import os
+import shutil
+import uuid
 from database import get_db
 from schemas import RequestCreate, RequestOut
 from auth_utils import get_current_user, require_role
 import models
 
 router = APIRouter()
+
+UPLOAD_DIR = "uploads"
+
+@router.post("/upload")
+def upload_file(
+    file: UploadFile = File(...),
+    current_user: models.User = Depends(get_current_user)
+):
+    if not os.path.exists(UPLOAD_DIR):
+        os.makedirs(UPLOAD_DIR)
+    
+    # Generate unique filename to prevent collisions
+    ext = os.path.splitext(file.filename)[1]
+    unique_name = f"{uuid.uuid4()}{ext}"
+    file_path = os.path.join(UPLOAD_DIR, unique_name)
+    
+    with open(file_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+    
+    # Return the relative URL and original name
+    return {
+        "document_name": file.filename,
+        "document_url": f"/uploads/{unique_name}"
+    }
 
 
 @router.post("/", response_model=RequestOut, status_code=201)
