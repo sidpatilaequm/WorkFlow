@@ -5,7 +5,7 @@ import os
 
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
-    "mysql+pymysql://root:password@localhost:3306/workflow_engine"
+    "mysql+pymysql://root:Vain%4021032002@localhost:3306/workflow_engine"
 )
 
 engine = create_engine(DATABASE_URL, echo=False, pool_pre_ping=True)
