@@ -1,0 +1,96 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+.env
+.venv
+venv/
+env/
+ENV/
+
+# Environment variables
+.env.*
+*.env
+
+# Python distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+pytest_cache/
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+
+# Logs
+*.log
+
+# SQLite database
+*.sqlite3
+*.db
+
+# IDEs and editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# FastAPI / Uvicorn
+*.pid
+*.sock
+
+# Migrations (optional – include if using Alembic and you DON'T want to track them)
+#migrations/
+#alembic/versions/
+
+# Static / media (optional depending on project)
+#staticfiles/
+#media/
+
+# Docker
+*.env.docker
+docker-compose.override.yml
+
+# MyPy / type checking
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# Ruff / lint caches
+.ruff_cache/
+
+# Jupyter Notebook
+.ipynb_checkpoints
