@@ -98,6 +98,33 @@ def list_requests(
 ):
     if current_user.role == models.UserRole.admin:
         return db.query(models.WorkflowRequest).all()
+
+    if current_user.role == models.UserRole.approver:
+        # Get all group IDs this approver belongs to
+        group_ids = [
+            m.group_id for m in
+            db.query(models.ApproverGroupMember)
+            .filter(models.ApproverGroupMember.user_id == current_user.id)
+            .all()
+        ]
+        # Get workflow IDs that have stages assigned to those groups
+        workflow_ids = [
+            ws.workflow_id for ws in
+            db.query(models.WorkflowStage)
+            .filter(models.WorkflowStage.approver_group_id.in_(group_ids))
+            .all()
+        ] if group_ids else []
+        # Return all requests on those workflows + requests they submitted themselves
+        return (
+            db.query(models.WorkflowRequest)
+            .filter(
+                (models.WorkflowRequest.workflow_id.in_(workflow_ids)) |
+                (models.WorkflowRequest.submitter_id == current_user.id)
+            )
+            .all()
+        )
+
+    # Submitter — own requests only
     return (
         db.query(models.WorkflowRequest)
         .filter(models.WorkflowRequest.submitter_id == current_user.id)
