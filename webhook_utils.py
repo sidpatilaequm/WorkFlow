@@ -25,7 +25,7 @@ EVENTS = {
 
 
 def _sign_payload(secret: str, body: bytes) -> str:
-    return hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+    return hmac.HMAC(secret.encode(), body, hashlib.sha256).hexdigest()
 
 
 def build_payload(event: str, request: models.WorkflowRequest, extra: dict = None) -> dict:

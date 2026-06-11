@@ -67,7 +67,7 @@ class User(Base):
 
     delegate               = relationship("User", remote_side=[id])
     submitted_requests     = relationship("WorkflowRequest", foreign_keys="WorkflowRequest.submitter_id", back_populates="submitter")
-    approval_actions       = relationship("ApprovalAction", back_populates="approver")
+    approval_actions       = relationship("ApprovalAction", foreign_keys="ApprovalAction.approver_id", back_populates="approver")
 
 
 class ApproverGroup(Base):
