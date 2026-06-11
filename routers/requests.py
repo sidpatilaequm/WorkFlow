@@ -36,7 +36,8 @@ def submit_request(
     db.flush()
 
     now = datetime.utcnow()
-    for stage_def in sorted(wf.stages, key=lambda s: s.order):
+    sorted_stages = sorted(wf.stages, key=lambda s: s.order)
+    for idx, stage_def in enumerate(sorted_stages):
         rs = models.RequestStage(
             request_id=req.id,
             stage_id=stage_def.id,
@@ -44,9 +45,12 @@ def submit_request(
         )
         db.add(rs)
         db.flush()
-        if stage_def.order == 0:
+        # Start the first stage
+        if idx == 0:
             rs.started_at = now
+            rs.status = models.RequestStatus.pending
             rs.sla_deadline = now + timedelta(hours=stage_def.sla_hours)
+            req.current_stage = stage_def.order
 
     db.add(models.ActivityLog(
         request_id=req.id,

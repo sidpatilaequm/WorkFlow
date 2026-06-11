@@ -145,19 +145,24 @@ class RequestStageOut(BaseModel):
 class RequestOut(BaseModel):
     id: int
     title: str
-    description: Optional[str]
-    document_name: Optional[str]
-    document_url: Optional[str]
-    amount: Optional[float]
-    department: Optional[str]
+    description: Optional[str] = None
+    document_name: Optional[str] = None
+    document_url: Optional[str] = None
+    amount: Optional[float] = None
+    department: Optional[str] = None
     workflow_id: int
+    workflow_name: Optional[str] = None
     submitter_id: int
+    submitter_name: Optional[str] = None
     status: RequestStatus
     current_stage: int
+    total_stages: int = 0
     submitted_at: datetime
-    resolved_at: Optional[datetime]
-    sla_deadline: Optional[datetime]
+    resolved_at: Optional[datetime] = None
+    sla_deadline: Optional[datetime] = None
     stages: List[RequestStageOut] = []
+    history: List[dict] = []
+    pending_group_name: Optional[str] = None
     class Config:
         from_attributes = True
 

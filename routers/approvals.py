@@ -85,7 +85,7 @@ def _check_stage_completion(db: Session, request_stage: models.RequestStage, req
                 rs.status = models.RequestStatus.pending
                 rs.started_at = None
                 rs.completed_at = None
-            req.current_stage = 0
+            req.current_stage = -1
             _advance_request(db, req)
             return
         elif behavior == models.RejectionBehavior.escalate:

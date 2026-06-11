@@ -117,6 +117,10 @@ class Workflow(Base):
     stages      = relationship("WorkflowStage", back_populates="workflow", order_by="WorkflowStage.order", cascade="all, delete-orphan")
     requests    = relationship("WorkflowRequest", back_populates="workflow")
 
+    @property
+    def total_stages(self):
+        return len(self.stages)
+
 
 class WorkflowStage(Base):
     __tablename__ = "workflow_stages"
@@ -164,6 +168,43 @@ class WorkflowRequest(Base):
     submitter     = relationship("User", foreign_keys=[submitter_id], back_populates="submitted_requests")
     stages        = relationship("RequestStage", back_populates="request", order_by="RequestStage.stage_order", cascade="all, delete-orphan")
     activity_log  = relationship("ActivityLog", back_populates="request", order_by="ActivityLog.created_at.desc()")
+
+    @property
+    def workflow_name(self):
+        return self.workflow.name if self.workflow else None
+
+    @property
+    def submitter_name(self):
+        return self.submitter.name if self.submitter else "System"
+
+    @property
+    def total_stages(self):
+        return self.workflow.total_stages if self.workflow else 0
+
+    @property
+    def pending_group_name(self):
+        if self.status != RequestStatus.pending:
+            return None
+        # Find stage definition for current stage
+        if not self.workflow:
+            return "Unknown Group"
+        for s in self.workflow.stages:
+            if s.order == self.current_stage:
+                return s.approver_group.name if s.approver_group else "Unknown Group"
+        return "Unknown Group"
+
+    @property
+    def history(self):
+        return [
+            {
+                "id": log.id,
+                "action": log.action,
+                "detail": log.detail,
+                "created_at": log.created_at,
+                "user_name": log.user.name if log.user else "System"
+            }
+            for log in self.activity_log
+        ]
 
 
 class RequestStage(Base):
