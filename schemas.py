@@ -133,7 +133,12 @@ class RequestCreate(BaseModel):
 
 class RequestStageOut(BaseModel):
     id: int
+    stage_id: int
     stage_order: int
+    stage_name: Optional[str] = None
+    stage_type: Optional[str] = None
+    group_name: Optional[str] = None
+    voting_rule: Optional[str] = None
     status: RequestStatus
     started_at: Optional[datetime]
     completed_at: Optional[datetime]

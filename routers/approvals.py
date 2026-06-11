@@ -121,20 +121,28 @@ def take_action(
         .first()
     )
 
-    # Self-healing: if no exact match, find the first pending stage that has started
+    # Self-healing: if no exact match, find the lowest-order pending stage
+    # (regardless of started_at — handles legacy rows and current_stage drift)
     if not active_stage:
         active_stage = (
             db.query(models.RequestStage)
             .filter(
                 models.RequestStage.request_id == req.id,
                 models.RequestStage.status == models.RequestStatus.pending,
-                models.RequestStage.started_at.isnot(None)
             )
             .order_by(models.RequestStage.stage_order)
             .first()
         )
-        # Sync current_stage if found
+        # Activate the stage if it was never started, and sync current_stage
         if active_stage:
+            now = datetime.utcnow()
+            if active_stage.started_at is None:
+                stage_def_heal = db.query(models.WorkflowStage).filter(
+                    models.WorkflowStage.id == active_stage.stage_id
+                ).first()
+                active_stage.started_at = now
+                if stage_def_heal:
+                    active_stage.sla_deadline = now + timedelta(hours=stage_def_heal.sla_hours)
             req.current_stage = active_stage.stage_order
             db.flush()
 
@@ -197,6 +205,16 @@ def take_action(
 @router.get("/pending")
 def my_pending(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
     """Return request IDs where the current user has a pending action."""
+
+    # Admins get all currently pending requests (they can act on any stage)
+    if current_user.role == models.UserRole.admin:
+        pending_requests = (
+            db.query(models.WorkflowRequest.id)
+            .filter(models.WorkflowRequest.status == models.RequestStatus.pending)
+            .all()
+        )
+        return [r.id for r in pending_requests]
+
     group_ids = [
         m.group_id for m in
         db.query(models.ApproverGroupMember)

@@ -224,6 +224,24 @@ class RequestStage(Base):
     stage           = relationship("WorkflowStage", back_populates="request_stages")
     actions         = relationship("ApprovalAction", back_populates="request_stage", cascade="all, delete-orphan")
 
+    @property
+    def stage_name(self):
+        return self.stage.name if self.stage else None
+
+    @property
+    def stage_type(self):
+        return self.stage.type.value if self.stage and self.stage.type else None
+
+    @property
+    def group_name(self):
+        if self.stage and self.stage.approver_group:
+            return self.stage.approver_group.name
+        return None
+
+    @property
+    def voting_rule(self):
+        return self.stage.voting_rule.value if self.stage and self.stage.voting_rule else None
+
 
 class ApprovalAction(Base):
     __tablename__ = "approval_actions"

@@ -114,7 +114,28 @@ def get_request(
     req = db.query(models.WorkflowRequest).filter(models.WorkflowRequest.id == req_id).first()
     if not req:
         raise HTTPException(404, "Request not found")
-    if current_user.role != models.UserRole.admin and req.submitter_id != current_user.id:
+
+    # Admins and submitters always have access
+    if current_user.role == models.UserRole.admin or req.submitter_id == current_user.id:
+        return req
+
+    # Approvers who are a member of any group assigned to this request's workflow stages
+    # also get read access (they need to be able to view what they're approving)
+    approver_group_ids = [
+        ws.approver_group_id
+        for ws in db.query(models.WorkflowStage)
+        .filter(models.WorkflowStage.workflow_id == req.workflow_id)
+        .all()
+    ]
+    is_group_member = (
+        db.query(models.ApproverGroupMember)
+        .filter(
+            models.ApproverGroupMember.user_id == current_user.id,
+            models.ApproverGroupMember.group_id.in_(approver_group_ids),
+        )
+        .first()
+    )
+    if not is_group_member:
         raise HTTPException(403, "Access denied")
     return req
 
