@@ -557,11 +557,9 @@ Cancel a pending request. Only the submitter or an admin may cancel.
 
 ---
 
-#### `GET /api/requests/action/{token}`
+#### `GET /api/requests/action/{req_id}`
 
-One-click action handler for email links. **No `user_id` required** — the approver identity is embedded in the signed token.
-
-The token encodes `request_id`, `stage_order`, `action` (`approved` or `rejected`), and `approver_id`.
+Approves the rwquest through the email itself 
 
 **Behavior**
 1. Decode and validate the JWT (`type = approval_link`, expiry checked).
