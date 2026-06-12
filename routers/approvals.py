@@ -40,7 +40,13 @@ def _check_stage_completion(db: Session, request_stage: models.RequestStage, req
     if not stage_def:
         return
 
-    actions = request_stage.actions
+    # Re-query actions fresh — the ORM relationship cache on request_stage.actions
+    # is stale after db.flush() and will not include the just-added action.
+    actions = (
+        db.query(models.ApprovalAction)
+        .filter(models.ApprovalAction.request_stage_id == request_stage.id)
+        .all()
+    )
     approved_count = sum(1 for a in actions if a.decision == models.ApprovalDecision.approved)
     rejected_count = sum(1 for a in actions if a.decision == models.ApprovalDecision.rejected)
 
@@ -51,25 +57,8 @@ def _check_stage_completion(db: Session, request_stage: models.RequestStage, req
     )
 
     now = datetime.utcnow()
-    completed = False
 
-    if stage_def.voting_rule == models.VotingRule.any:
-        if approved_count >= 1:
-            completed = True
-            request_stage.status = models.RequestStatus.approved
-    elif stage_def.voting_rule == models.VotingRule.all:
-        if approved_count >= group_members:
-            completed = True
-            request_stage.status = models.RequestStatus.approved
-    elif stage_def.voting_rule == models.VotingRule.sequential:
-        # Sequential: last action decides
-        if actions:
-            last = sorted(actions, key=lambda a: a.acted_at)[-1]
-            if last.decision == models.ApprovalDecision.approved:
-                completed = True
-                request_stage.status = models.RequestStatus.approved
-
-    # Any rejection with stop behavior → reject entire request
+    # ── 1. Handle rejection FIRST — before any approval/completion logic ──────
     if rejected_count >= 1:
         workflow = db.query(models.Workflow).filter(models.Workflow.id == req.workflow_id).first()
         behavior = workflow.rejection_behavior if workflow else models.RejectionBehavior.stop
@@ -79,8 +68,8 @@ def _check_stage_completion(db: Session, request_stage: models.RequestStage, req
             req.status = models.RequestStatus.rejected
             req.resolved_at = now
             return
+
         elif behavior == models.RejectionBehavior.restart:
-            # Reset all stages and restart from beginning
             for rs in req.stages:
                 rs.status = models.RequestStatus.pending
                 rs.started_at = None
@@ -88,10 +77,36 @@ def _check_stage_completion(db: Session, request_stage: models.RequestStage, req
             req.current_stage = -1
             _advance_request(db, req)
             return
+
         elif behavior == models.RejectionBehavior.escalate:
             request_stage.status = models.RequestStatus.escalated
             req.status = models.RequestStatus.escalated
             return
+
+    # ── 2. Approval logic — only reached when there are zero rejections ────────
+    completed = False
+
+    if stage_def.voting_rule == models.VotingRule.any:
+        if approved_count >= 1:
+            completed = True
+            request_stage.status = models.RequestStatus.approved
+
+    elif stage_def.voting_rule == models.VotingRule.all:
+        if approved_count >= group_members:
+            completed = True
+            request_stage.status = models.RequestStatus.approved
+
+    elif stage_def.voting_rule == models.VotingRule.sequential:
+        if actions:
+            last = sorted(actions, key=lambda a: a.acted_at)[-1]
+            if last.decision == models.ApprovalDecision.approved:
+                completed = True
+                request_stage.status = models.RequestStatus.approved
+            elif last.decision == models.ApprovalDecision.rejected:
+                request_stage.status = models.RequestStatus.rejected
+                req.status = models.RequestStatus.rejected
+                req.resolved_at = now
+                return
 
     if completed:
         request_stage.completed_at = now
@@ -122,7 +137,6 @@ def take_action(
     )
 
     # Self-healing: if no exact match, find the lowest-order pending stage
-    # (regardless of started_at — handles legacy rows and current_stage drift)
     if not active_stage:
         active_stage = (
             db.query(models.RequestStage)
@@ -133,7 +147,6 @@ def take_action(
             .order_by(models.RequestStage.stage_order)
             .first()
         )
-        # Activate the stage if it was never started, and sync current_stage
         if active_stage:
             now = datetime.utcnow()
             if active_stage.started_at is None:
@@ -145,9 +158,15 @@ def take_action(
                     active_stage.sla_deadline = now + timedelta(hours=stage_def_heal.sla_hours)
             req.current_stage = active_stage.stage_order
             db.flush()
+            db.refresh(req)
+            if req.status != models.RequestStatus.pending:
+                raise HTTPException(400, f"Request is already {req.status.value}")
 
     if not active_stage:
         raise HTTPException(400, "No active stage found for this request")
+
+    if active_stage.status != models.RequestStatus.pending:
+        raise HTTPException(400, f"This stage has already been {active_stage.status.value}")
 
     stage_def = db.query(models.WorkflowStage).filter(models.WorkflowStage.id == active_stage.stage_id).first()
 
@@ -165,11 +184,17 @@ def take_action(
             raise HTTPException(403, "You are not in the approver group for this stage")
 
     # Prevent duplicate action
-    existing = next((a for a in active_stage.actions if a.approver_id == current_user.id), None)
+    existing = (
+        db.query(models.ApprovalAction)
+        .filter(
+            models.ApprovalAction.request_stage_id == active_stage.id,
+            models.ApprovalAction.approver_id == current_user.id
+        )
+        .first()
+    )
     if existing:
         raise HTTPException(400, "You have already acted on this stage")
 
-    # Handle OOO delegation
     approver_id = current_user.id
     delegated_to = None
     if payload.decision == models.ApprovalDecision.delegated:
@@ -187,7 +212,6 @@ def take_action(
     db.add(action)
     db.flush()
 
-    # Log activity
     verb = payload.decision.value
     db.add(models.ActivityLog(
         request_id=req.id,
@@ -206,7 +230,6 @@ def take_action(
 def my_pending(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
     """Return request IDs where the current user has a pending action."""
 
-    # Admins get all currently pending requests (they can act on any stage)
     if current_user.role == models.UserRole.admin:
         pending_requests = (
             db.query(models.WorkflowRequest.id)

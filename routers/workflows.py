@@ -69,8 +69,28 @@ def update_workflow(
     wf = db.query(models.Workflow).filter(models.Workflow.id == wf_id).first()
     if not wf:
         raise HTTPException(404, "Workflow not found")
-    for field, val in payload.dict(exclude_unset=True).items():
+    update_data = payload.dict(exclude_unset=True)
+    stages_data = update_data.pop("stages", None)
+    for field, val in update_data.items():
         setattr(wf, field, val)
+    if stages_data is not None:
+        # Replace all stages — cascade delete handles old rows
+        for old in list(wf.stages):
+            db.delete(old)
+        db.flush()
+        for s in stages_data:
+            db.add(models.WorkflowStage(
+                workflow_id=wf.id,
+                name=s["name"],
+                type=s["type"],
+                order=s["order"],
+                approver_group_id=s["approver_group_id"],
+                sla_hours=s.get("sla_hours", 48),
+                voting_rule=s.get("voting_rule", models.VotingRule.any),
+                condition_field=s.get("condition_field"),
+                condition_op=s.get("condition_op"),
+                condition_value=s.get("condition_value"),
+            ))
     db.commit()
     db.refresh(wf)
     return wf

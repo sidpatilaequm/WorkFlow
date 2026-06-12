@@ -31,9 +31,18 @@ class Token(BaseModel):
     token_type: str = "bearer"
     user: UserOut
 
+class TokenResponse(BaseModel):
+    """Access + refresh token pair (no user object — used by /refresh)."""
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
+
+class RefreshRequest(BaseModel):
+    refresh_token: str
 
 
 # ─── Approver Groups ──────────────────────────────────────────────────────────
@@ -101,6 +110,7 @@ class WorkflowUpdate(BaseModel):
     rejection_behavior: Optional[RejectionBehavior] = None
     notification_channel: Optional[NotificationChannel] = None
     auto_approve_hours: Optional[int] = None
+    stages: Optional[List[StageCreate]] = None
 
 class WorkflowOut(BaseModel):
     id: int

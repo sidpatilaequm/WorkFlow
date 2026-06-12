@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, File, UploadFile, Form
+from fastapi import APIRouter, Depends, HTTPException, File, UploadFile
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from datetime import datetime, timedelta
@@ -7,12 +7,13 @@ import shutil
 import uuid
 from database import get_db
 from schemas import RequestCreate, RequestOut
-from auth_utils import get_current_user, require_role
+from auth_utils import get_current_user, require_role, decode_approval_token
 import models
 
 router = APIRouter()
 
 UPLOAD_DIR = "uploads"
+
 
 @router.post("/upload")
 def upload_file(
@@ -21,16 +22,14 @@ def upload_file(
 ):
     if not os.path.exists(UPLOAD_DIR):
         os.makedirs(UPLOAD_DIR)
-    
-    # Generate unique filename to prevent collisions
+
     ext = os.path.splitext(file.filename)[1]
     unique_name = f"{uuid.uuid4()}{ext}"
     file_path = os.path.join(UPLOAD_DIR, unique_name)
-    
+
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
-    
-    # Return the relative URL and original name
+
     return {
         "document_name": file.filename,
         "document_url": f"/uploads/{unique_name}"
@@ -47,6 +46,12 @@ def submit_request(
     if not wf or not wf.is_active:
         raise HTTPException(404, "Workflow not found or inactive")
 
+    # Auto-approve check: amount_threshold
+    auto_approve = False
+    if wf.amount_threshold is not None and payload.amount is not None:
+        if payload.amount <= wf.amount_threshold:
+            auto_approve = True
+
     req = models.WorkflowRequest(
         title=payload.title,
         description=payload.description,
@@ -62,6 +67,19 @@ def submit_request(
     db.add(req)
     db.flush()
 
+    if auto_approve:
+        req.status = models.RequestStatus.approved
+        req.resolved_at = datetime.utcnow()
+        db.add(models.ActivityLog(
+            request_id=req.id,
+            user_id=None,
+            action="auto_approved",
+            detail=f"Auto-approved: amount {payload.amount} is within threshold {wf.amount_threshold}",
+        ))
+        db.commit()
+        db.refresh(req)
+        return req
+
     now = datetime.utcnow()
     sorted_stages = sorted(wf.stages, key=lambda s: s.order)
     for idx, stage_def in enumerate(sorted_stages):
@@ -72,7 +90,6 @@ def submit_request(
         )
         db.add(rs)
         db.flush()
-        # Start the first stage
         if idx == 0:
             rs.started_at = now
             rs.status = models.RequestStatus.pending
@@ -93,43 +110,47 @@ def submit_request(
 
 @router.get("/", response_model=List[RequestOut])
 def list_requests(
+    status: Optional[str] = None,
+    workflow_id: Optional[int] = None,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
     if current_user.role == models.UserRole.admin:
-        return db.query(models.WorkflowRequest).all()
+        q = db.query(models.WorkflowRequest)
+        if status:
+            q = q.filter(models.WorkflowRequest.status == status)
+        if workflow_id:
+            q = q.filter(models.WorkflowRequest.workflow_id == workflow_id)
+        return q.all()
 
     if current_user.role == models.UserRole.approver:
-        # Get all group IDs this approver belongs to
         group_ids = [
             m.group_id for m in
             db.query(models.ApproverGroupMember)
             .filter(models.ApproverGroupMember.user_id == current_user.id)
             .all()
         ]
-        # Get workflow IDs that have stages assigned to those groups
         workflow_ids = [
             ws.workflow_id for ws in
             db.query(models.WorkflowStage)
             .filter(models.WorkflowStage.approver_group_id.in_(group_ids))
             .all()
         ] if group_ids else []
-        # Return all requests on those workflows + requests they submitted themselves
-        return (
-            db.query(models.WorkflowRequest)
-            .filter(
-                (models.WorkflowRequest.workflow_id.in_(workflow_ids)) |
-                (models.WorkflowRequest.submitter_id == current_user.id)
-            )
-            .all()
+        q = db.query(models.WorkflowRequest).filter(
+            (models.WorkflowRequest.workflow_id.in_(workflow_ids)) |
+            (models.WorkflowRequest.submitter_id == current_user.id)
         )
+        if status:
+            q = q.filter(models.WorkflowRequest.status == status)
+        return q.all()
 
     # Submitter — own requests only
-    return (
-        db.query(models.WorkflowRequest)
-        .filter(models.WorkflowRequest.submitter_id == current_user.id)
-        .all()
+    q = db.query(models.WorkflowRequest).filter(
+        models.WorkflowRequest.submitter_id == current_user.id
     )
+    if status:
+        q = q.filter(models.WorkflowRequest.status == status)
+    return q.all()
 
 
 @router.get("/{req_id}", response_model=RequestOut)
@@ -142,12 +163,9 @@ def get_request(
     if not req:
         raise HTTPException(404, "Request not found")
 
-    # Admins and submitters always have access
     if current_user.role == models.UserRole.admin or req.submitter_id == current_user.id:
         return req
 
-    # Approvers who are a member of any group assigned to this request's workflow stages
-    # also get read access (they need to be able to view what they're approving)
     approver_group_ids = [
         ws.approver_group_id
         for ws in db.query(models.WorkflowStage)
@@ -178,7 +196,7 @@ def cancel_request(
         raise HTTPException(404, "Request not found")
     if req.submitter_id != current_user.id and current_user.role != models.UserRole.admin:
         raise HTTPException(403, "Access denied")
-    if req.status != models.RequestStatus.pending:
+    if req.status not in (models.RequestStatus.pending,):
         raise HTTPException(400, f"Cannot cancel a request with status '{req.status.value}'")
     req.status = models.RequestStatus.cancelled
     req.resolved_at = datetime.utcnow()
@@ -190,3 +208,93 @@ def cancel_request(
     ))
     db.commit()
     return {"detail": "Request cancelled"}
+
+
+@router.get("/action/{token}", response_model=RequestOut)
+def one_click_action(
+    token: str,
+    db: Session = Depends(get_db),
+):
+    """
+    Email link handler — approve or reject via a signed token, no login required.
+    Token carries: request_id, stage_order, action ('approved'|'rejected').
+    """
+    payload = decode_approval_token(token)
+    request_id = payload["request_id"]
+    stage_order = payload["stage_order"]
+    action_str = payload["action"]
+
+    req = db.query(models.WorkflowRequest).filter(models.WorkflowRequest.id == request_id).first()
+    if not req:
+        raise HTTPException(404, "Request not found")
+
+    if req.status != models.RequestStatus.pending:
+        raise HTTPException(400, f"Request is already {req.status.value}")
+
+    active_stage = (
+        db.query(models.RequestStage)
+        .filter(
+            models.RequestStage.request_id == request_id,
+            models.RequestStage.stage_order == stage_order,
+            models.RequestStage.status == models.RequestStatus.pending,
+        )
+        .first()
+    )
+    if not active_stage:
+        raise HTTPException(400, "Stage no longer pending or not found")
+
+    stage_def = db.query(models.WorkflowStage).filter(
+        models.WorkflowStage.id == active_stage.stage_id
+    ).first()
+
+    # Find first approver in the group to record the action against
+    member = (
+        db.query(models.ApproverGroupMember)
+        .filter(models.ApproverGroupMember.group_id == stage_def.approver_group_id)
+        .first()
+    ) if stage_def else None
+
+    if not member:
+        raise HTTPException(400, "No approver found for this stage")
+
+    decision = (
+        models.ApprovalDecision.approved
+        if action_str == "approved"
+        else models.ApprovalDecision.rejected
+    )
+
+    # Prevent duplicate
+    existing = (
+        db.query(models.ApprovalAction)
+        .filter(
+            models.ApprovalAction.request_stage_id == active_stage.id,
+            models.ApprovalAction.approver_id == member.user_id,
+        )
+        .first()
+    )
+    if existing:
+        raise HTTPException(400, "Action already recorded for this stage")
+
+    action = models.ApprovalAction(
+        request_stage_id=active_stage.id,
+        approver_id=member.user_id,
+        decision=decision,
+        comment="Via email link",
+    )
+    db.add(action)
+    db.flush()
+
+    db.add(models.ActivityLog(
+        request_id=req.id,
+        user_id=member.user_id,
+        action=action_str,
+        detail=f"Stage {stage_order} {action_str} via email link",
+    ))
+
+    # Trigger stage completion logic (reuse approvals logic inline)
+    from routers.approvals import _check_stage_completion
+    _check_stage_completion(db, active_stage, req)
+
+    db.commit()
+    db.refresh(req)
+    return req
