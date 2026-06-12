@@ -5,7 +5,6 @@ from typing import Optional
 from datetime import datetime, timedelta
 from database import get_db
 from schemas import AnalyticsSummary
-from auth_utils import get_current_user
 import models
 
 router = APIRouter()
@@ -13,10 +12,10 @@ router = APIRouter()
 
 @router.get("/summary", response_model=AnalyticsSummary)
 def analytics_summary(
+    user_id: int = Query(...),
     days: int = Query(30, ge=1, le=365),
     workflow_id: Optional[int] = None,
     db: Session = Depends(get_db),
-    _=Depends(get_current_user),
 ):
     since = datetime.utcnow() - timedelta(days=days)
 
@@ -69,9 +68,9 @@ def analytics_summary(
 
 @router.get("/by-workflow")
 def by_workflow(
+    user_id: int = Query(...),
     days: int = Query(30, ge=1, le=365),
     db: Session = Depends(get_db),
-    _=Depends(get_current_user),
 ):
     """Breakdown of approval metrics per workflow template."""
     since = datetime.utcnow() - timedelta(days=days)
@@ -107,9 +106,9 @@ def by_workflow(
 
 @router.get("/approver-performance")
 def approver_performance(
+    user_id: int = Query(...),
     days: int = Query(30, ge=1, le=365),
     db: Session = Depends(get_db),
-    _=Depends(get_current_user),
 ):
     """Per-approver decision counts and average response time."""
     since = datetime.utcnow() - timedelta(days=days)
@@ -166,9 +165,9 @@ def approver_performance(
 
 @router.get("/activity-feed")
 def activity_feed(
+    user_id: int = Query(...),
     limit: int = Query(50, le=200),
     db: Session = Depends(get_db),
-    _=Depends(get_current_user),
 ):
     """Recent audit activity with request and actor details."""
     rows = (

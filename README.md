@@ -2,6 +2,8 @@
 
 Full-stack: **FastAPI + MySQL** backend · **React + Vite** frontend.
 
+> **Auth model:** Registration and JWT middleware have been removed. All protected endpoints accept `?user_id=<id>` as a required query parameter. The caller is responsible for passing the correct user ID (from your existing users table or session management layer).
+
 ---
 
 ## Table of Contents
@@ -18,7 +20,7 @@ Full-stack: **FastAPI + MySQL** backend · **React + Vite** frontend.
    - [Requests](#requests)
    - [Approvals](#approvals)
    - [Analytics](#analytics)
-7. [Authentication](#authentication)
+7. [How user_id Auth Works](#how-user_id-auth-works)
 8. [Role-Based Access](#role-based-access)
 9. [Workflow Engine Logic](#workflow-engine-logic)
 10. [Stage Types & Email Actions](#stage-types--email-actions)
@@ -34,7 +36,7 @@ Full-stack: **FastAPI + MySQL** backend · **React + Vite** frontend.
 
 | Module | What's built |
 |---|---|
-| **Auth** | JWT login/register, access + refresh tokens, role-based access (submitter / approver / admin) |
+| **Auth** | Login only (no register). Identity passed via `?user_id=` query param on all routes |
 | **Workflows** | CRUD, 4 stage types (approval / review / acknowledgement / signature), folder triggers, amount-based auto-approve |
 | **Stages** | Per-stage SLA deadlines, voting rules (any / all / sequential), per-stage conditional branching |
 | **Requests** | Submit with document upload, cancel, track with live stage progress, one-click email approval |
@@ -55,14 +57,14 @@ Vendors_Workflow/
     ├── database.py              # SQLAlchemy engine + session factory
     ├── models.py                # All ORM models (10 tables)
     ├── schemas.py               # Pydantic request/response schemas
-    ├── auth_utils.py            # JWT (access + refresh + approval tokens w/ approver_id), bcrypt, role guards
+    ├── auth_utils.py            # Approval link JWT tokens, bcrypt helpers
     ├── webhook_utils.py         # Outgoing webhook dispatcher + Slack Block Kit builder
     ├── requirements.txt
     ├── alembic.ini
     ├── .env                     # Environment config (never commit secrets)
     ├── uploads/                 # Uploaded document files (served at /api/uploads/)
     ├── routers/
-    │   ├── auth.py              # POST /api/auth/register|login|refresh  GET /api/auth/me
+    │   ├── auth.py              # POST /api/auth/login  GET /api/auth/me
     │   ├── workflows.py         # CRUD /api/workflows
     │   ├── requests.py          # Submit/list/cancel/one-click  /api/requests
     │   ├── stages.py            # Approver groups + stage management  /api/stages
@@ -77,8 +79,10 @@ Vendors_Workflow/
 
 ## Database Schema
 
+> The `users` table is assumed to already exist in your database. The SQL script at the bottom of this file creates all other tables only and references `users.id` as a foreign key.
+
 ```
-users
+users  ← pre-existing, not created by this project's SQL script
   id, name, email, hashed_password, role(submitter|approver|admin),
   department, is_active, ooo_until, delegate_id → users.id, created_at
 
@@ -134,6 +138,8 @@ GRANT ALL PRIVILEGES ON workflow_engine.* TO 'wfuser'@'localhost';
 FLUSH PRIVILEGES;
 ```
 
+Then run the SQL script at the bottom of this file against your database. It creates all tables **except** `users` (already present).
+
 ### 2. Environment
 
 ```bash
@@ -141,7 +147,7 @@ cd backend
 cp .env.example .env   # or edit .env directly
 ```
 
-At minimum set `DATABASE_URL` and `SECRET_KEY`. See [Environment Variables](#environment-variables) for all options.
+Set at minimum `DATABASE_URL` and `SECRET_KEY`. See [Environment Variables](#environment-variables).
 
 ### 3. Backend
 
@@ -150,40 +156,24 @@ pip install -r requirements.txt
 uvicorn main:app --reload --port 8000
 ```
 
-Tables are auto-created on first run via `Base.metadata.create_all()`.
+Tables are auto-created on first run via `Base.metadata.create_all()`, or you can apply `schema.sql` manually.
 
 - Swagger UI: http://localhost:8000/docs
 - ReDoc: http://localhost:8000/redoc
 - Health check: http://localhost:8000/health
 
-### 4. First-time Bootstrap
+### 4. Quick Bootstrap (using existing user IDs)
+
+Since registration is removed, seed your users directly in the database or through your existing user management system. Then use their IDs in all API calls.
 
 ```bash
-# 1. Register an admin user
-curl -s -X POST http://localhost:8000/api/auth/register \
-  -H "Content-Type: application/json" \
-  -d '{"name":"Admin","email":"admin@co.com","password":"admin123","role":"admin"}'
-
-# 2. Log in and capture the token
-TOKEN=$(curl -s -X POST http://localhost:8000/api/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"email":"admin@co.com","password":"admin123"}' \
-  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
-
-# 3. Register an approver
-curl -s -X POST http://localhost:8000/api/auth/register \
-  -H "Content-Type: application/json" \
-  -d '{"name":"Finance Approver","email":"finance@co.com","password":"pass123","role":"approver","department":"Finance"}'
-
-# 4. Create an approver group
-curl -s -X POST http://localhost:8000/api/stages/approver-groups \
-  -H "Authorization: Bearer $TOKEN" \
+# Create an approver group (user_id=1 must be an admin)
+curl -s -X POST "http://localhost:8000/api/stages/approver-groups?user_id=1" \
   -H "Content-Type: application/json" \
   -d '{"name":"Finance Team","description":"Finance department approvers","member_ids":[2]}'
 
-# 5. Create a workflow
-curl -s -X POST http://localhost:8000/api/workflows/ \
-  -H "Authorization: Bearer $TOKEN" \
+# Create a workflow
+curl -s -X POST "http://localhost:8000/api/workflows/?user_id=1" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "Vendor Invoice Approval",
@@ -203,21 +193,26 @@ curl -s -X POST http://localhost:8000/api/workflows/ \
       }
     ]
   }'
+
+# Submit a request (user_id=3 is the submitter)
+curl -s -X POST "http://localhost:8000/api/requests/?user_id=3" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "Vendor Invoice Q2",
+    "amount": 250000,
+    "workflow_id": 1 //Chnagesbased on the previis query
+  }'
 ```
 
 ---
 
 ## Environment Variables
 
-All variables are read from `.env` in the backend directory.
-
 | Variable | Default | Description |
 |---|---|---|
 | `DATABASE_URL` | — | MySQL connection string. Format: `mysql+pymysql://user:pass@host:port/db` |
-| `SECRET_KEY` | — | **Required.** Random secret for JWT signing. Use `openssl rand -hex 32` |
-| `ALGORITHM` | `HS256` | JWT signing algorithm |
-| `ACCESS_TOKEN_EXPIRE_MINUTES` | `60` | Access token lifetime in minutes |
-| `REFRESH_TOKEN_EXPIRE_DAYS` | `7` | Refresh token lifetime in days |
+| `SECRET_KEY` | — | **Required.** Random secret for approval-link JWT signing. Use `openssl rand -hex 32` |
+| `ALGORITHM` | `HS256` | JWT signing algorithm (used for email approval tokens only) |
 | `DEBUG` | `0` | Set to `1` to enable debug logging and open CORS to all origins |
 | `FRONTEND_URL` | `http://localhost:3000` | Used in CORS allowlist (non-debug) and email link generation |
 | `SMTP_HOST` | `smtp.gmail.com` | SMTP server hostname |
@@ -230,38 +225,67 @@ All variables are read from `.env` in the backend directory.
 | `WEBHOOK_SECRET` | — | HMAC secret for signing outgoing webhook payloads |
 | `ESCALATION_CHECK_INTERVAL` | `15` | How often (minutes) the SLA escalation scheduler job runs |
 
+> `ACCESS_TOKEN_EXPIRE_MINUTES` and `REFRESH_TOKEN_EXPIRE_DAYS` are no longer used since JWT middleware has been removed. `SECRET_KEY` is still required for signing email approval-link tokens.
+
 ---
 
 ## API Reference
 
-All endpoints are prefixed with their router path. Protected endpoints require:
+### How `user_id` Auth Works
+
+Every endpoint (except the email one-click action handler and `/health`) requires a `?user_id=<integer>` query parameter. The backend looks up the user in the database and enforces role checks from there. There is no `Authorization` header needed.
 
 ```
-Authorization: Bearer <access_token>
+GET /api/workflows/?user_id=1
+POST /api/requests/?user_id=3
+POST /api/approvals/?user_id=2
 ```
+
+If the user is not found or inactive, the endpoint returns `404 User not found`.
 
 ---
 
 ### Auth
 
-#### `POST /api/auth/register`
+> `POST /api/auth/register` has been **removed**. Users must be created directly in the database or via your existing user management system.
 
-Register a new user. Open endpoint (no auth required).
+#### `POST /api/auth/login`
+
+Authenticate and get back the user object. Useful for verifying credentials from a frontend login form. Does **not** require a JWT on subsequent calls — the returned user `id` should be stored client-side and passed as `?user_id=` on all further requests.
 
 **Request body**
 ```json
 {
-  "name": "Jane Doe",
   "email": "jane@company.com",
-  "password": "secret123",
-  "role": "submitter",
-  "department": "Finance"
+  "password": "secret123"
 }
 ```
 
-`role` must be one of: `submitter` · `approver` · `admin`
+**Response `200`**
+```json
+{
+  "access_token": "",
+  "token_type": "bearer",
+  "user": {
+    "id": 3,
+    "name": "Jane Doe",
+    "email": "jane@company.com",
+    "role": "submitter",
+    "department": "Finance",
+    "is_active": true
+  }
+}
+```
 
-**Response `201`**
+> The `access_token` field is present for schema compatibility but is not required for subsequent calls.
+
+---
+
+#### `GET /api/auth/me?user_id=<id>`
+
+Return the user profile for the given `user_id`.
+
+**Response `200`**
 ```json
 {
   "id": 3,
@@ -275,79 +299,19 @@ Register a new user. Open endpoint (no auth required).
 
 ---
 
-#### `POST /api/auth/login`
-
-Authenticate and receive an access token.
-
-**Request body**
-```json
-{
-  "email": "jane@company.com",
-  "password": "secret123"
-}
-```
-
-**Response `200`**
-```json
-{
-  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-  "token_type": "bearer",
-  "user": {
-    "id": 3,
-    "name": "Jane Doe",
-    "email": "jane@company.com",
-    "role": "submitter",
-    "department": "Finance",
-    "is_active": true
-  }
-}
-```
-
----
-
-#### `POST /api/auth/refresh`
-
-Exchange a valid refresh token for a new access + refresh token pair.
-
-**Request body**
-```json
-{
-  "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-}
-```
-
-**Response `200`**
-```json
-{
-  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-  "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-  "token_type": "bearer"
-}
-```
-
----
-
-#### `GET /api/auth/me`
-
-Return the currently authenticated user's profile.
-
-**Response `200`** — same shape as `UserOut` above.
-
----
-
 ### Workflows
 
-#### `GET /api/workflows/`
+All workflow endpoints require `?user_id=<id>`.
 
-List all workflows.
+#### `GET /api/workflows/?user_id=<id>`
 
-**Auth** any role
+List all workflows including their stages. Any active user can call this.
 
-**Response `200`** — array of workflow objects including their stages.
+**Response `200`** — array of workflow objects.
 
 ---
 
-#### `GET /api/workflows/{wf_id}`
+#### `GET /api/workflows/{wf_id}?user_id=<id>`
 
 Fetch a single workflow by ID.
 
@@ -355,11 +319,9 @@ Fetch a single workflow by ID.
 
 ---
 
-#### `POST /api/workflows/`
+#### `POST /api/workflows/?user_id=<id>`
 
-Create a new workflow with its stages in one call.
-
-**Auth** admin only
+Create a new workflow with its stages in one call. Requires `role = admin`.
 
 **Request body**
 ```json
@@ -391,29 +353,23 @@ Create a new workflow with its stages in one call.
 }
 ```
 
-**Stage types** — each stage independently sets its own type, which drives email button labels (see [Stage Types & Email Actions](#stage-types--email-actions)).
+**Workflow types:** `approval` · `review` · `acknowledgement` · `signature`
 
-**Voting rules** — `any` (one approval suffices) · `all` (every group member must act) · `sequential` (last action wins).
-
-When `voting_rule` is `all`, each group member receives their own individually signed email link. The backend records each approval against that specific member. The stage only completes once `approved_count == group_member_count`.
+**Voting rules:** `any` · `all` · `sequential`
 
 **Response `200`** — full workflow object with generated IDs.
 
 ---
 
-#### `PATCH /api/workflows/{wf_id}`
+#### `PATCH /api/workflows/{wf_id}?user_id=<id>`
 
-Partially update a workflow. If `stages` is included, all existing stages are replaced.
-
-**Auth** admin only
+Partially update a workflow. If `stages` is included, all existing stages are replaced. Requires `role = admin`.
 
 ---
 
-#### `DELETE /api/workflows/{wf_id}`
+#### `DELETE /api/workflows/{wf_id}?user_id=<id>`
 
-Delete a workflow and all its stages (cascade).
-
-**Auth** admin only
+Delete a workflow and all its stages (cascade). Requires `role = admin`.
 
 **Response `200`** — `{"detail": "Deleted"}`
 
@@ -421,9 +377,9 @@ Delete a workflow and all its stages (cascade).
 
 ### Stages & Approver Groups
 
-#### `GET /api/stages/approver-groups`
+#### `GET /api/stages/approver-groups?user_id=<id>`
 
-List all approver groups with their members.
+List all approver groups with their members. Any active user can call this.
 
 **Response `200`**
 ```json
@@ -441,11 +397,9 @@ List all approver groups with their members.
 
 ---
 
-#### `POST /api/stages/approver-groups`
+#### `POST /api/stages/approver-groups?user_id=<id>`
 
-Create an approver group, optionally pre-populating members.
-
-**Auth** admin only
+Create an approver group, optionally pre-populating members. Requires `role = admin`.
 
 ```json
 { "name": "Legal Team", "description": "Legal department reviewers", "member_ids": [4, 5] }
@@ -453,37 +407,49 @@ Create an approver group, optionally pre-populating members.
 
 ---
 
-#### `DELETE /api/stages/approver-groups/{group_id}`
+#### `DELETE /api/stages/approver-groups/{group_id}?user_id=<id>`
 
-Delete an approver group. **Auth** admin only.
-
----
-
-#### `POST /api/stages/approver-groups/{group_id}/members`
-
-Add a user to a group. **Auth** admin only. Body: `{ "user_id": 6 }`
+Delete an approver group. Requires `role = admin`.
 
 ---
 
-#### `DELETE /api/stages/approver-groups/{group_id}/members/{user_id}`
+#### `POST /api/stages/approver-groups/{group_id}/members?user_id=<id>`
 
-Remove a user from a group. **Auth** admin only.
+Add a user to a group. Requires `role = admin`. Body: `{ "user_id": 6 }`
 
 ---
 
-#### `GET /api/stages/users`
+#### `DELETE /api/stages/approver-groups/{group_id}/members/{user_id_path}?user_id=<id>`
 
-List all active users. **Auth** admin only.
+Remove a user from a group. Requires `role = admin`.
+
+---
+
+#### `GET /api/stages/users?user_id=<id>`
+
+List all active users. Requires `role = admin`.
+
+---
+
+#### `POST /api/stages/{wf_id}/stages?user_id=<id>`
+
+Add a single stage to an existing workflow. Requires `role = admin`.
+
+---
+
+#### `DELETE /api/stages/{stage_id}?user_id=<id>`
+
+Delete a workflow stage by its stage ID. Requires `role = admin`.
 
 ---
 
 ### Requests
 
-#### `POST /api/requests/upload`
+#### `POST /api/requests/upload?user_id=<id>`
 
 Upload a document before submitting a request.
 
-**Request** `multipart/form-data` with field `file`.
+**Request:** `multipart/form-data` with field `file`.
 
 **Response `200`**
 ```json
@@ -497,7 +463,7 @@ Files are served statically at `/api/uploads/<filename>`.
 
 ---
 
-#### `POST /api/requests/`
+#### `POST /api/requests/?user_id=<id>`
 
 Submit a new workflow request. Starts stage 1 immediately and emails all members of that stage's approver group.
 
@@ -521,9 +487,13 @@ If `amount <= workflow.amount_threshold`, the request is auto-approved without g
 
 ---
 
-#### `GET /api/requests/`
+#### `GET /api/requests/?user_id=<id>`
 
-List requests visible to the current user (scoped by role). Supports `?status=` and `?workflow_id=` filters.
+List requests scoped by the caller's role. Supports `?status=` and `?workflow_id=` filters.
+
+- **admin** — sees all requests
+- **approver** — sees requests on workflows where they are a group member, plus their own submitted requests
+- **submitter** — sees only their own submitted requests
 
 **`RequestOut` shape**
 ```json
@@ -569,15 +539,15 @@ List requests visible to the current user (scoped by role). Supports `?status=` 
 
 ---
 
-#### `GET /api/requests/{req_id}`
+#### `GET /api/requests/{req_id}?user_id=<id>`
 
-Fetch a single request. Access is scoped: submitters see their own, approvers see requests on their workflows.
+Fetch a single request. Access is scoped: submitters see their own, approvers see requests on their workflows, admins see all.
 
-**Response `403`** — if the caller is not the submitter and is not in any approver group for this workflow.
+**Response `403`** — if not the submitter and not in any approver group for this workflow.
 
 ---
 
-#### `PATCH /api/requests/{req_id}/cancel`
+#### `PATCH /api/requests/{req_id}/cancel?user_id=<id>`
 
 Cancel a pending request. Only the submitter or an admin may cancel.
 
@@ -587,17 +557,17 @@ Cancel a pending request. Only the submitter or an admin may cancel.
 
 #### `GET /api/requests/action/{token}`
 
-One-click action handler for email links. No login required.
+One-click action handler for email links. **No `user_id` required** — the approver identity is embedded in the signed token.
 
-The token encodes `request_id`, `stage_order`, `action` (`approved` or `rejected`), and `approver_id`. This ensures that in `voting_rule = all` stages, each member's click is recorded against their own identity rather than a shared placeholder.
+The token encodes `request_id`, `stage_order`, `action` (`approved` or `rejected`), and `approver_id`.
 
 **Behavior**
 1. Decode and validate the JWT (`type = approval_link`, expiry checked).
 2. Verify the target stage is still `pending`.
-3. Resolve the acting member from `approver_id` in the token (falls back to first group member for legacy tokens).
+3. Resolve the acting member from `approver_id` in the token.
 4. Check for a duplicate action by that specific member.
 5. Write `ApprovalAction` + `ActivityLog`.
-6. Run `_check_stage_completion()` — same logic as the in-app approve flow.
+6. Run `_check_stage_completion()`.
 7. Return the updated `RequestOut`.
 
 **Response `200`** — updated `RequestOut`.
@@ -610,11 +580,9 @@ The token encodes `request_id`, `stage_order`, `action` (`approved` or `rejected
 
 ### Approvals
 
-#### `POST /api/approvals/`
+#### `POST /api/approvals/?user_id=<id>`
 
-Record an approve, reject, or delegate decision for the current stage.
-
-**Auth** approver or admin
+Record an approve, reject, or delegate decision for the current stage. Requires `role = approver` or `admin`.
 
 **Request body**
 ```json
@@ -660,12 +628,12 @@ When `decision` is `delegated`, `delegated_to_id` (user ID) is required.
 
 ---
 
-#### `GET /api/approvals/pending`
+#### `GET /api/approvals/pending?user_id=<id>`
 
 Return request IDs awaiting the calling user's decision.
 
-- **Admin** — all pending request IDs
-- **Approver** — IDs where they are in the active stage's group and have not yet acted
+- **admin** — all pending request IDs
+- **approver** — IDs where they are in the active stage's group and have not yet acted
 
 **Response `200`** — `[42, 47, 51]`
 
@@ -673,22 +641,12 @@ Return request IDs awaiting the calling user's decision.
 
 ### Analytics
 
-All analytics endpoints accept `?days=N` (1–365, default 30).
+All analytics endpoints require `?user_id=<id>` and accept `?days=N` (1–365, default 30).
 
-#### `GET /api/analytics/summary` — high-level metrics
-#### `GET /api/analytics/by-workflow` — per-workflow breakdown
-#### `GET /api/analytics/approver-performance` — per-approver decision counts and avg response time
-#### `GET /api/analytics/activity-feed` — recent audit trail (`?limit=N`, max 200)
-
----
-
-## Authentication
-
-**Access tokens** — 60 min by default. Send as `Authorization: Bearer <token>`.
-
-**Refresh tokens** — 7 days. Use `POST /api/auth/refresh` to renew without re-login.
-
-**Approval link tokens** — 3-day, signed JWT embedded in notification emails. Carry `request_id`, `stage_order`, `action`, and `approver_id`. Verified server-side; no `Authorization` header needed.
+#### `GET /api/analytics/summary?user_id=<id>` — high-level metrics
+#### `GET /api/analytics/by-workflow?user_id=<id>` — per-workflow breakdown
+#### `GET /api/analytics/approver-performance?user_id=<id>` — per-approver decision counts and avg response time
+#### `GET /api/analytics/activity-feed?user_id=<id>` — recent audit trail (`?limit=N`, max 200)
 
 ---
 
@@ -696,7 +654,7 @@ All analytics endpoints accept `?days=N` (1–365, default 30).
 
 | Endpoint category | submitter | approver | admin |
 |---|---|---|---|
-| Register / login / refresh / me | ✓ | ✓ | ✓ |
+| Login / me | ✓ | ✓ | ✓ |
 | List/view workflows | ✓ | ✓ | ✓ |
 | Create/update/delete workflows | — | — | ✓ |
 | Submit a request | ✓ | ✓ | ✓ |
@@ -710,6 +668,7 @@ All analytics endpoints accept `?days=N` (1–365, default 30).
 | Approver group CRUD | — | — | ✓ |
 | User list | — | — | ✓ |
 | Analytics | ✓ | ✓ | ✓ |
+| Email one-click action | no auth required | no auth required | no auth required |
 
 ---
 
@@ -718,7 +677,7 @@ All analytics endpoints accept `?days=N` (1–365, default 30).
 ### Request submission flow
 
 ```
-POST /api/requests/
+POST /api/requests/?user_id=<id>
   │
   ├─ amount <= workflow.amount_threshold?
   │     └─ YES → status = approved, resolved_at = now, ActivityLog: auto_approved
@@ -770,8 +729,6 @@ _advance_request(db, request)
 
 ## Stage Types & Email Actions
 
-Each workflow stage has a `type` that independently controls what the email buttons say and what the subject line reads. The backend maps `stage_type` → labels in `NotificationService.STAGE_TYPE_LABELS`.
-
 | Stage type | Positive button | Negative button | Subject prefix |
 |---|---|---|---|
 | `approval` | ✓ Approve | ✗ Reject | `[Approval Required]` |
@@ -779,40 +736,29 @@ Each workflow stage has a `type` that independently controls what the email butt
 | `acknowledgement` | ✓ Acknowledge | ✗ Decline | `[Acknowledgement Required]` |
 | `signature` | ✓ Sign | ✗ Refuse | `[Signature Required]` |
 
-The stage type is read from `WorkflowStage.type` at notification time and passed into `notify_approvers(stage_type=...)`. An unknown type falls back to the `approval` labels.
-
-### Per-member tokens (voting_rule = all)
-
-When a stage uses `voting_rule = all`, each group member receives their **own personally addressed email** with links that contain their `approver_id` embedded in the JWT. This means:
-
-- Every member must click their own link — no shared link that one person can click for everyone.
-- The duplicate-action guard is per-member, so one person clicking twice is blocked, but it does not block anyone else.
-- The stage only advances once `approved_count == group_member_count`.
+When `voting_rule = all`, each group member receives their own individually signed email link. Each member's click is recorded against their specific identity. The stage only completes once `approved_count == group_member_count`.
 
 ---
 
 ## Notifications & Webhooks
 
-### Email notifications (`services/notification.py`)
+### Email (`services/notification.py`)
 
-All email sending is async (`aiosmtplib`). In sync FastAPI route handlers, notifications are dispatched via `_run_async()` — a daemon thread calling `asyncio.run()` — to avoid conflicts with uvicorn's event loop.
+All email sending is async (`aiosmtplib`). In sync FastAPI handlers, notifications are dispatched via `_run_async()` — a daemon thread calling `asyncio.run()`.
 
-- **`notify_approvers()`** — sends a personalised HTML email to each approver. Button labels and subject line adapt to the stage type. Each email carries that approver's unique signed token.
-- **`notify_submitter_completed()`** — notifies the submitter when the request is fully approved or rejected.
-- **`send_email()`** — generic SMTP helper. Silently skips if `SMTP_USER` / `SMTP_PASSWORD` are not configured.
+- **`notify_approvers()`** — personalised HTML email per approver, button labels adapt to stage type.
+- **`notify_submitter_completed()`** — notifies submitter on full approval or rejection.
+- **`send_email()`** — silently skips if `SMTP_USER` / `SMTP_PASSWORD` are not configured.
 
-### Slack notifications
+### Slack
 
-Configure `SLACK_BOT_TOKEN` in `.env`.
+Configure `SLACK_BOT_TOKEN` in `.env`. `notify_slack_approver()` sends a Block Kit DM with Approve / Reject buttons.
 
-- **`notify_slack_approver()`** — sends a Block Kit DM with Approve / Reject buttons.
-- **`send_slack()`** — generic helper for arbitrary channels.
-
-### Outgoing webhooks (`webhook_utils.py`)
+### Outgoing Webhooks (`webhook_utils.py`)
 
 **Supported events:** `request.submitted` · `stage.approved` · `stage.rejected` · `stage.escalated` · `request.approved` · `request.rejected` · `request.cancelled`
 
-Payloads are HMAC-SHA256 signed when a `WebhookConfig.secret` is set:
+Payloads are HMAC-SHA256 signed when `WebhookConfig.secret` is set:
 ```
 X-Workflow-Signature: sha256=<hmac-hex>
 X-Workflow-Event: stage.approved
@@ -825,14 +771,11 @@ X-Workflow-Event: stage.approved
 Starts automatically with the FastAPI app (via `lifespan`) and stops cleanly on shutdown.
 
 ### Escalation job — every `ESCALATION_CHECK_INTERVAL` minutes (default 15)
-
 1. Finds `RequestStage` rows where `status = pending`, `sla_deadline <= now`, `is_sla_breached = false`.
 2. Marks `is_sla_breached = true`, sets parent request to `escalated`.
-3. Writes `ActivityLog: escalated`.
-4. Sends an admin alert email.
+3. Writes `ActivityLog: escalated`, sends admin alert email.
 
 ### Reminder job — every hour
-
 1. Finds stages with `sla_deadline` between now and now + 4 hours, not yet breached.
 2. Sends a reminder email to each group member.
 
@@ -847,9 +790,9 @@ Starts automatically with the FastAPI app (via `lifespan`) and stops cleanly on 
 | HTTP status | Meaning |
 |---|---|
 | `400` | Bad request — invalid input, duplicate action, wrong state |
-| `401` | Unauthorized — missing, invalid, or expired token |
-| `403` | Forbidden — authenticated but insufficient role or group membership |
-| `404` | Not found — resource does not exist |
+| `401` | Unauthorized — invalid or expired approval-link token |
+| `403` | Forbidden — insufficient role or group membership |
+| `404` | Not found — user or resource does not exist |
 | `500` | Internal server error — unhandled exception (logged server-side) |
 
 ---
@@ -859,12 +802,11 @@ Starts automatically with the FastAPI app (via `lifespan`) and stops cleanly on 
 | Layer | Tech |
 |---|---|
 | Backend | FastAPI 0.111, SQLAlchemy 2.0, Alembic, PyMySQL |
-| Auth | python-jose (JWT), passlib (bcrypt) |
+| Auth (tokens) | python-jose (JWT for email approval links), passlib (bcrypt) |
 | Email | aiosmtplib 3.0 |
 | Scheduler | APScheduler 3.10 |
 | HTTP client | httpx 0.27 |
 | Frontend | React 18, Vite 5 |
-| Styling | Pure CSS custom properties |
 | DB | MySQL 8+ |
 
 ---
@@ -873,19 +815,219 @@ Starts automatically with the FastAPI app (via `lifespan`) and stops cleanly on 
 
 ### June 2026
 
-**Email action flow — per-member tokens**
-- `create_approval_token()` now accepts an `approver_id` parameter and embeds it in the JWT payload.
-- `_fire_stage_notification()` generates one personal token pair per group member and sends individual emails, rather than one shared link for the whole group.
-- `one_click_action()` reads `approver_id` from the token and resolves the acting member precisely, so `voting_rule = all` stages correctly accumulate one approval per person.
+**Removed: `POST /api/auth/register` and JWT middleware**
+- `/api/auth/register` endpoint removed entirely.
+- `get_current_user` JWT dependency removed from all routes.
+- All protected routes now accept `?user_id=<integer>` query param. The backend resolves the user from the DB and enforces role checks directly.
+
+**Per-member email approval tokens**
+- `create_approval_token()` embeds `approver_id` in the JWT payload.
+- `_fire_stage_notification()` generates one personal token pair per group member.
+- `one_click_action()` reads `approver_id` from the token for precise member resolution.
 
 **Stage-type-aware email buttons**
-- `notify_approvers()` now accepts a `stage_type` parameter.
-- Button labels and email subject line adapt per stage type: Approve/Reject for `approval`, Mark Reviewed/Request Changes for `review`, Acknowledge/Decline for `acknowledgement`, Sign/Refuse for `signature`.
-- `_fire_stage_notification()` passes `stage_def.type.value` through to the notification service.
+- Button labels and subject line adapt per stage type (Approve/Reject, Mark Reviewed/Request Changes, Acknowledge/Decline, Sign/Refuse).
 
 **First-stage notification on submit**
-- `submit_request()` now calls `_fire_stage_notification()` after `db.commit()` for stage 1. Previously, approvers were only emailed when a stage _advanced_ (stage 2+), so the first stage never triggered emails.
+- `submit_request()` now fires stage-1 notifications immediately after commit.
 
 **Async email in sync handlers**
-- Replaced `asyncio.create_task()` calls (which fail in sync route handlers running in a thread pool) with `_run_async()` — a helper that fires a daemon thread and calls `asyncio.run(coro)` inside it.
+- Replaced `asyncio.create_task()` with `_run_async()` daemon thread pattern.
 
+---
+
+## SQL Script
+
+> Run this against your `workflow_engine` database **after** ensuring the `users` table already exists.
+> `CREATE INDEX IF NOT EXISTS` requires MySQL 8.0.16+.
+
+```sql
+-- =============================================================================
+-- WorkflowOS — Database Schema
+-- Applies to: workflow_engine database
+-- NOTE: The `users` table is assumed to already exist.
+--       This script creates all other tables only.
+-- Run with: mysql -u wfuser -p workflow_engine < schema.sql
+-- =============================================================================
+
+SET FOREIGN_KEY_CHECKS = 0;
+
+-- -----------------------------------------------------------------------------
+-- approver_groups
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS approver_groups (
+    id          INT AUTO_INCREMENT PRIMARY KEY,
+    name        VARCHAR(100) NOT NULL,
+    description TEXT,
+    created_at  DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------------
+-- approver_group_members
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS approver_group_members (
+    id       INT AUTO_INCREMENT PRIMARY KEY,
+    group_id INT NOT NULL,
+    user_id  INT NOT NULL,
+    CONSTRAINT fk_agm_group FOREIGN KEY (group_id)
+        REFERENCES approver_groups (id) ON DELETE CASCADE,
+    CONSTRAINT fk_agm_user  FOREIGN KEY (user_id)
+        REFERENCES users (id) ON DELETE CASCADE,
+    UNIQUE KEY uq_group_user (group_id, user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------------
+-- workflows
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS workflows (
+    id                   INT AUTO_INCREMENT PRIMARY KEY,
+    name                 VARCHAR(200) NOT NULL,
+    description          TEXT,
+    type                 ENUM('approval','review','acknowledgement','signature') NOT NULL,
+    folder_trigger       VARCHAR(300),
+    is_active            TINYINT(1) NOT NULL DEFAULT 1,
+    escalation_hours     INT NOT NULL DEFAULT 24,
+    rejection_behavior   ENUM('stop','restart','escalate') NOT NULL DEFAULT 'stop',
+    notification_channel ENUM('email','slack','both') NOT NULL DEFAULT 'email',
+    auto_approve_hours   INT,
+    amount_threshold     DOUBLE,
+    created_by_id        INT,
+    created_at           DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at           DATETIME(6) ON UPDATE CURRENT_TIMESTAMP(6),
+    CONSTRAINT fk_wf_created_by FOREIGN KEY (created_by_id)
+        REFERENCES users (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------------
+-- workflow_stages
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS workflow_stages (
+    id                INT AUTO_INCREMENT PRIMARY KEY,
+    workflow_id       INT NOT NULL,
+    name              VARCHAR(200) NOT NULL,
+    type              ENUM('approval','review','acknowledgement','signature') NOT NULL,
+    `order`           INT NOT NULL,
+    approver_group_id INT,
+    sla_hours         INT NOT NULL DEFAULT 48,
+    voting_rule       ENUM('any','all','sequential') NOT NULL DEFAULT 'any',
+    condition_field   VARCHAR(100),
+    condition_op      VARCHAR(20),
+    condition_value   VARCHAR(300),
+    CONSTRAINT fk_ws_workflow FOREIGN KEY (workflow_id)
+        REFERENCES workflows (id) ON DELETE CASCADE,
+    CONSTRAINT fk_ws_group   FOREIGN KEY (approver_group_id)
+        REFERENCES approver_groups (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------------
+-- workflow_requests
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS workflow_requests (
+    id            INT AUTO_INCREMENT PRIMARY KEY,
+    title         VARCHAR(300) NOT NULL,
+    description   TEXT,
+    document_name VARCHAR(300),
+    document_url  VARCHAR(500),
+    amount        DOUBLE,
+    department    VARCHAR(100),
+    request_type  VARCHAR(100),
+    workflow_id   INT,
+    submitter_id  INT,
+    status        ENUM('pending','approved','rejected','escalated','cancelled')
+                      NOT NULL DEFAULT 'pending',
+    current_stage INT NOT NULL DEFAULT 0,
+    submitted_at  DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    resolved_at   DATETIME(6),
+    sla_deadline  DATETIME(6),
+    CONSTRAINT fk_wr_workflow  FOREIGN KEY (workflow_id)
+        REFERENCES workflows (id),
+    CONSTRAINT fk_wr_submitter FOREIGN KEY (submitter_id)
+        REFERENCES users (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------------
+-- request_stages
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS request_stages (
+    id              INT AUTO_INCREMENT PRIMARY KEY,
+    request_id      INT NOT NULL,
+    stage_id        INT,
+    stage_order     INT NOT NULL,
+    status          ENUM('pending','approved','rejected','escalated','cancelled')
+                        NOT NULL DEFAULT 'pending',
+    started_at      DATETIME(6),
+    completed_at    DATETIME(6),
+    sla_deadline    DATETIME(6),
+    is_sla_breached TINYINT(1) NOT NULL DEFAULT 0,
+    CONSTRAINT fk_rs_request FOREIGN KEY (request_id)
+        REFERENCES workflow_requests (id) ON DELETE CASCADE,
+    CONSTRAINT fk_rs_stage   FOREIGN KEY (stage_id)
+        REFERENCES workflow_stages (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------------
+-- approval_actions
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS approval_actions (
+    id               INT AUTO_INCREMENT PRIMARY KEY,
+    request_stage_id INT NOT NULL,
+    approver_id      INT,
+    decision         ENUM('approved','rejected','delegated') NOT NULL,
+    comment          TEXT,
+    delegated_to_id  INT,
+    acted_at         DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    CONSTRAINT fk_aa_stage     FOREIGN KEY (request_stage_id)
+        REFERENCES request_stages (id) ON DELETE CASCADE,
+    CONSTRAINT fk_aa_approver  FOREIGN KEY (approver_id)
+        REFERENCES users (id),
+    CONSTRAINT fk_aa_delegated FOREIGN KEY (delegated_to_id)
+        REFERENCES users (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------------
+-- activity_log
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS activity_log (
+    id         INT AUTO_INCREMENT PRIMARY KEY,
+    request_id INT,
+    user_id    INT,
+    action     VARCHAR(100) NOT NULL,
+    detail     TEXT,
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    CONSTRAINT fk_al_request FOREIGN KEY (request_id)
+        REFERENCES workflow_requests (id) ON DELETE CASCADE,
+    CONSTRAINT fk_al_user    FOREIGN KEY (user_id)
+        REFERENCES users (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------------
+-- webhook_configs
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS webhook_configs (
+    id          INT AUTO_INCREMENT PRIMARY KEY,
+    workflow_id INT,
+    event       VARCHAR(100) NOT NULL,
+    url         VARCHAR(500) NOT NULL,
+    secret      VARCHAR(200),
+    is_active   TINYINT(1) NOT NULL DEFAULT 1,
+    created_at  DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    CONSTRAINT fk_wc_workflow FOREIGN KEY (workflow_id)
+        REFERENCES workflows (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------------
+-- Useful indexes
+-- -----------------------------------------------------------------------------
+CREATE INDEX IF NOT EXISTS idx_wr_status    ON workflow_requests (status);
+CREATE INDEX IF NOT EXISTS idx_wr_submitter ON workflow_requests (submitter_id);
+CREATE INDEX IF NOT EXISTS idx_wr_workflow  ON workflow_requests (workflow_id);
+CREATE INDEX IF NOT EXISTS idx_rs_request   ON request_stages (request_id);
+CREATE INDEX IF NOT EXISTS idx_rs_status    ON request_stages (status);
+CREATE INDEX IF NOT EXISTS idx_rs_sla       ON request_stages (sla_deadline, is_sla_breached);
+CREATE INDEX IF NOT EXISTS idx_aa_stage     ON approval_actions (request_stage_id);
+CREATE INDEX IF NOT EXISTS idx_aa_approver  ON approval_actions (approver_id);
+CREATE INDEX IF NOT EXISTS idx_al_request   ON activity_log (request_id);
+CREATE INDEX IF NOT EXISTS idx_al_created   ON activity_log (created_at);
+
+SET FOREIGN_KEY_CHECKS = 1;
+```

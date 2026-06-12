@@ -1,19 +1,26 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from typing import List
 from database import get_db
 from schemas import WorkflowCreate, WorkflowOut, WorkflowUpdate
-from auth_utils import get_current_user, require_role
 import models
 
 router = APIRouter()
 
+def _get_user_or_404(user_id: int, db: Session) -> models.User:
+    user = db.query(models.User).filter(models.User.id == user_id, models.User.is_active == True).first()
+    if not user:
+        raise HTTPException(404, "User not found")
+    return user
+
 @router.get("/", response_model=List[WorkflowOut])
-def list_workflows(db: Session = Depends(get_db), _=Depends(get_current_user)):
+def list_workflows(user_id: int = Query(...), db: Session = Depends(get_db)):
+    _get_user_or_404(user_id, db)
     return db.query(models.Workflow).all()
 
 @router.get("/{wf_id}", response_model=WorkflowOut)
-def get_workflow(wf_id: int, db: Session = Depends(get_db), _=Depends(get_current_user)):
+def get_workflow(wf_id: int, user_id: int = Query(...), db: Session = Depends(get_db)):
+    _get_user_or_404(user_id, db)
     wf = db.query(models.Workflow).filter(models.Workflow.id == wf_id).first()
     if not wf:
         raise HTTPException(404, "Workflow not found")
@@ -22,9 +29,12 @@ def get_workflow(wf_id: int, db: Session = Depends(get_db), _=Depends(get_curren
 @router.post("/", response_model=WorkflowOut)
 def create_workflow(
     payload: WorkflowCreate,
+    user_id: int = Query(...),
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(require_role(models.UserRole.admin))
 ):
+    current_user = _get_user_or_404(user_id, db)
+    if current_user.role != models.UserRole.admin:
+        raise HTTPException(403, "Admin role required")
     wf = models.Workflow(
         name=payload.name,
         description=payload.description,
@@ -63,9 +73,12 @@ def create_workflow(
 def update_workflow(
     wf_id: int,
     payload: WorkflowUpdate,
+    user_id: int = Query(...),
     db: Session = Depends(get_db),
-    _=Depends(require_role(models.UserRole.admin))
 ):
+    current_user = _get_user_or_404(user_id, db)
+    if current_user.role != models.UserRole.admin:
+        raise HTTPException(403, "Admin role required")
     wf = db.query(models.Workflow).filter(models.Workflow.id == wf_id).first()
     if not wf:
         raise HTTPException(404, "Workflow not found")
@@ -74,7 +87,6 @@ def update_workflow(
     for field, val in update_data.items():
         setattr(wf, field, val)
     if stages_data is not None:
-        # Replace all stages — cascade delete handles old rows
         for old in list(wf.stages):
             db.delete(old)
         db.flush()
@@ -96,7 +108,10 @@ def update_workflow(
     return wf
 
 @router.delete("/{wf_id}")
-def delete_workflow(wf_id: int, db: Session = Depends(get_db), _=Depends(require_role(models.UserRole.admin))):
+def delete_workflow(wf_id: int, user_id: int = Query(...), db: Session = Depends(get_db)):
+    current_user = _get_user_or_404(user_id, db)
+    if current_user.role != models.UserRole.admin:
+        raise HTTPException(403, "Admin role required")
     wf = db.query(models.Workflow).filter(models.Workflow.id == wf_id).first()
     if not wf:
         raise HTTPException(404, "Workflow not found")

@@ -1,9 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from database import get_db
-from schemas import UserCreate, UserOut, Token, TokenResponse, LoginRequest, RefreshRequest
+from schemas import UserOut, Token, TokenResponse, LoginRequest, RefreshRequest
 from auth_utils import (
-    hash_password, verify_password,
+    verify_password,
     create_access_token, create_refresh_token,
     get_current_user,
 )
@@ -15,24 +15,6 @@ router = APIRouter()
 
 SECRET_KEY = os.getenv("SECRET_KEY", "")
 ALGORITHM = os.getenv("ALGORITHM", "HS256")
-
-
-@router.post("/register", response_model=UserOut, status_code=status.HTTP_201_CREATED)
-def register(payload: UserCreate, db: Session = Depends(get_db)):
-    existing = db.query(models.User).filter(models.User.email == payload.email).first()
-    if existing:
-        raise HTTPException(status_code=400, detail="Email already registered")
-    user = models.User(
-        name=payload.name,
-        email=payload.email,
-        hashed_password=hash_password(payload.password),
-        role=payload.role,
-        department=payload.department,
-    )
-    db.add(user)
-    db.commit()
-    db.refresh(user)
-    return user
 
 
 @router.post("/login", response_model=Token)

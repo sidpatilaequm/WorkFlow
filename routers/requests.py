@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, File, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, File, UploadFile, Query
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from datetime import datetime, timedelta
@@ -7,7 +7,7 @@ import shutil
 import uuid
 from database import get_db
 from schemas import RequestCreate, RequestOut
-from auth_utils import get_current_user, require_role, decode_approval_token
+from auth_utils import decode_approval_token
 import models
 from routers.approvals import _fire_stage_notification, _run_async
 
@@ -16,11 +16,20 @@ router = APIRouter()
 UPLOAD_DIR = "uploads"
 
 
+def _get_user_or_404(user_id: int, db: Session) -> models.User:
+    user = db.query(models.User).filter(models.User.id == user_id, models.User.is_active == True).first()
+    if not user:
+        raise HTTPException(404, "User not found")
+    return user
+
+
 @router.post("/upload")
 def upload_file(
     file: UploadFile = File(...),
-    current_user: models.User = Depends(get_current_user)
+    user_id: int = Query(...),
+    db: Session = Depends(get_db),
 ):
+    _get_user_or_404(user_id, db)
     if not os.path.exists(UPLOAD_DIR):
         os.makedirs(UPLOAD_DIR)
 
@@ -40,14 +49,14 @@ def upload_file(
 @router.post("/", response_model=RequestOut, status_code=201)
 def submit_request(
     payload: RequestCreate,
+    user_id: int = Query(...),
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user),
 ):
+    current_user = _get_user_or_404(user_id, db)
     wf = db.query(models.Workflow).filter(models.Workflow.id == payload.workflow_id).first()
     if not wf or not wf.is_active:
         raise HTTPException(404, "Workflow not found or inactive")
 
-    # Auto-approve check: amount_threshold
     auto_approve = False
     if wf.amount_threshold is not None and payload.amount is not None:
         if payload.amount <= wf.amount_threshold:
@@ -107,7 +116,6 @@ def submit_request(
     db.commit()
     db.refresh(req)
 
-    # Fire email notification for the first stage after commit
     if sorted_stages:
         first_stage_def = sorted_stages[0]
         first_request_stage = (
@@ -126,11 +134,12 @@ def submit_request(
 
 @router.get("/", response_model=List[RequestOut])
 def list_requests(
+    user_id: int = Query(...),
     status: Optional[str] = None,
     workflow_id: Optional[int] = None,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user),
 ):
+    current_user = _get_user_or_404(user_id, db)
     if current_user.role == models.UserRole.admin:
         q = db.query(models.WorkflowRequest)
         if status:
@@ -160,7 +169,6 @@ def list_requests(
             q = q.filter(models.WorkflowRequest.status == status)
         return q.all()
 
-    # Submitter — own requests only
     q = db.query(models.WorkflowRequest).filter(
         models.WorkflowRequest.submitter_id == current_user.id
     )
@@ -172,9 +180,10 @@ def list_requests(
 @router.get("/{req_id}", response_model=RequestOut)
 def get_request(
     req_id: int,
+    user_id: int = Query(...),
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user),
 ):
+    current_user = _get_user_or_404(user_id, db)
     req = db.query(models.WorkflowRequest).filter(models.WorkflowRequest.id == req_id).first()
     if not req:
         raise HTTPException(404, "Request not found")
@@ -204,9 +213,10 @@ def get_request(
 @router.patch("/{req_id}/cancel")
 def cancel_request(
     req_id: int,
+    user_id: int = Query(...),
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user),
 ):
+    current_user = _get_user_or_404(user_id, db)
     req = db.query(models.WorkflowRequest).filter(models.WorkflowRequest.id == req_id).first()
     if not req:
         raise HTTPException(404, "Request not found")
@@ -264,8 +274,6 @@ def one_click_action(
         models.WorkflowStage.id == active_stage.stage_id
     ).first()
 
-    # Resolve which approver is acting — use token's approver_id if present,
-    # otherwise fall back to first group member (legacy tokens / any-vote stages)
     if approver_id:
         member = (
             db.query(models.ApproverGroupMember)
@@ -291,7 +299,6 @@ def one_click_action(
         else models.ApprovalDecision.rejected
     )
 
-    # Prevent duplicate
     existing = (
         db.query(models.ApprovalAction)
         .filter(
@@ -319,7 +326,6 @@ def one_click_action(
         detail=f"Stage {stage_order} {action_str} via email link",
     ))
 
-    # Trigger stage completion logic (reuse approvals logic inline)
     from routers.approvals import _check_stage_completion
     _check_stage_completion(db, active_stage, req)
 

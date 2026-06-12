@@ -1,9 +1,9 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
 from database import get_db
 from schemas import ApprovalActionCreate, ApprovalActionOut
-from auth_utils import get_current_user, create_approval_token
+from auth_utils import create_approval_token
 from services.notification import notification_service
 import asyncio
 import threading
@@ -185,9 +185,12 @@ def _check_stage_completion(db: Session, request_stage: models.RequestStage, req
 @router.post("/", response_model=ApprovalActionOut)
 def take_action(
     payload: ApprovalActionCreate,
+    user_id: int = Query(...),
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
 ):
+    current_user = db.query(models.User).filter(models.User.id == user_id, models.User.is_active == True).first()
+    if not current_user:
+        raise HTTPException(404, "User not found")
     req = db.query(models.WorkflowRequest).filter(models.WorkflowRequest.id == payload.request_id).first()
     if not req:
         raise HTTPException(404, "Request not found")
@@ -296,8 +299,11 @@ def take_action(
 
 
 @router.get("/pending")
-def my_pending(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+def my_pending(user_id: int = Query(...), db: Session = Depends(get_db)):
     """Return request IDs where the current user has a pending action."""
+    current_user = db.query(models.User).filter(models.User.id == user_id, models.User.is_active == True).first()
+    if not current_user:
+        raise HTTPException(404, "User not found")
 
     if current_user.role == models.UserRole.admin:
         pending_requests = (
