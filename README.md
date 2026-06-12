@@ -79,49 +79,51 @@ Vendors_Workflow/
 
 ## Database Schema
 
-> The `users` table is assumed to already exist in your database. The SQL script at the bottom of this file creates all other tables only and references `users.id` as a foreign key.
+> All tables — including the client-owned `user_details` table — reside in the **`multimedia_governance`** schema. SQLAlchemy is configured to use this schema globally via `MetaData(schema="multimedia_governance")` in `database.py`.
 
 ```
-users  ← pre-existing, not created by this project's SQL script
-  id, name, email, hashed_password, role(submitter|approver|admin),
-  department, is_active, ooo_until, delegate_id → users.id, created_at
+multimedia_governance.user_details  ← pre-existing client table, not created by this project's SQL script
+  userId (PK), email, firstName, lastName, phoneNumber, designation,
+  onboardingStatus, onboardingToken, tokenExpiry, userType,
+  signupDate, created_date, modified_date,
+  super_admin_id → (SuperAdmin FK), company_id → (CompanyDetails FK)
 
-approver_groups
+multimedia_governance.approver_groups
   id, name, description, created_at
 
-approver_group_members
-  id, group_id → approver_groups.id, user_id → users.id
+multimedia_governance.approver_group_members
+  id, group_id → approver_groups.id, user_id → user_details.userId
 
-workflows
+multimedia_governance.workflows
   id, name, description, type(approval|review|acknowledgement|signature),
   folder_trigger, is_active, escalation_hours, rejection_behavior(stop|restart|escalate),
   notification_channel(email|slack|both), auto_approve_hours, amount_threshold,
-  created_by_id → users.id, created_at, updated_at
+  created_by_id → user_details.userId, created_at, updated_at
 
-workflow_stages
+multimedia_governance.workflow_stages
   id, workflow_id → workflows.id, name, type(approval|review|acknowledgement|signature),
   order, approver_group_id → approver_groups.id, sla_hours,
   voting_rule(any|all|sequential), condition_field, condition_op, condition_value
 
-workflow_requests
+multimedia_governance.workflow_requests
   id, title, description, document_name, document_url, amount, department,
-  request_type, workflow_id → workflows.id, submitter_id → users.id,
+  request_type, workflow_id → workflows.id, submitter_id → user_details.userId,
   status(pending|approved|rejected|escalated|cancelled), current_stage,
   submitted_at, resolved_at, sla_deadline
 
-request_stages
+multimedia_governance.request_stages
   id, request_id → workflow_requests.id, stage_id → workflow_stages.id,
   stage_order, status, started_at, completed_at, sla_deadline, is_sla_breached
 
-approval_actions
-  id, request_stage_id → request_stages.id, approver_id → users.id,
-  decision(approved|rejected|delegated), comment, delegated_to_id → users.id, acted_at
+multimedia_governance.approval_actions
+  id, request_stage_id → request_stages.id, approver_id → user_details.userId,
+  decision(approved|rejected|delegated), comment, delegated_to_id → user_details.userId, acted_at
 
-activity_log
-  id, request_id → workflow_requests.id, user_id → users.id (nullable = system),
+multimedia_governance.activity_log
+  id, request_id → workflow_requests.id, user_id → user_details.userId (nullable = system),
   action, detail, created_at
 
-webhook_configs
+multimedia_governance.webhook_configs
   id, workflow_id → workflows.id (nullable = global), event, url, secret, is_active, created_at
 ```
 
@@ -129,16 +131,16 @@ webhook_configs
 
 ## Setup & Installation
 
-### 1. MySQL
+### 1. MySQL / PostgreSQL
+
+The application uses the client's existing **`multimedia_governance`** schema. Ensure the schema and the `user_details` table already exist before running the SQL script.
 
 ```sql
-CREATE DATABASE workflow_engine CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-CREATE USER 'wfuser'@'localhost' IDENTIFIED BY 'yourpassword';
-GRANT ALL PRIVILEGES ON workflow_engine.* TO 'wfuser'@'localhost';
-FLUSH PRIVILEGES;
+-- If the schema does not already exist:
+CREATE SCHEMA IF NOT EXISTS multimedia_governance;
 ```
 
-Then run the SQL script at the bottom of this file against your database. It creates all tables **except** `users` (already present).
+Then run the SQL script at the bottom of this file against your database. It creates all workflow tables **inside** `multimedia_governance`, and references `multimedia_governance.user_details.userId` as the user foreign key.
 
 ### 2. Environment
 
@@ -210,7 +212,7 @@ curl -s -X POST "http://localhost:8000/api/requests/?user_id=3" \
 
 | Variable | Default | Description |
 |---|---|---|
-| `DATABASE_URL` | — | MySQL connection string. Format: `mysql+pymysql://user:pass@host:port/db` |
+| `DATABASE_URL` | — | MySQL/PostgreSQL connection string. Format: `mysql+pymysql://user:pass@host:port/db` or `postgresql+psycopg2://user:pass@host:port/db`. The `multimedia_governance` schema is set at the ORM level. |
 | `SECRET_KEY` | — | **Required.** Random secret for approval-link JWT signing. Use `openssl rand -hex 32` |
 | `ALGORITHM` | `HS256` | JWT signing algorithm (used for email approval tokens only) |
 | `DEBUG` | `0` | Set to `1` to enable debug logging and open CORS to all origins |
@@ -813,7 +815,15 @@ Starts automatically with the FastAPI app (via `lifespan`) and stops cleanly on 
 
 ## Changelog
 
-### June 2026
+### June 2026 (Branch: abhyu)
+
+**Migrated to client `multimedia_governance` schema**
+- `database.py`: `Base` is now initialised with `MetaData(schema="multimedia_governance")` so all tables are automatically scoped to this schema without per-model `__table_args__`.
+- `models.py` — `User` model:
+  - `__tablename__` changed from `users` → `user_details`.
+  - Primary key column mapped as `Column("userId", Integer, ...)` to match the client's `userId` column (Python attribute remains `.id` to avoid cascading renames).
+- `models.py` — all other models: every `ForeignKey("users.id")` reference updated to `ForeignKey("user_details.userId")`.
+- SQL script at the bottom of this file updated: all `CREATE TABLE` statements now target `multimedia_governance.*`, and all `REFERENCES users (id)` constraints now reference `multimedia_governance.user_details (userId)`.
 
 **Removed: `POST /api/auth/register` and JWT middleware**
 - `/api/auth/register` endpoint removed entirely.
@@ -838,24 +848,29 @@ Starts automatically with the FastAPI app (via `lifespan`) and stops cleanly on 
 
 ## SQL Script
 
-> Run this against your `workflow_engine` database **after** ensuring the `users` table already exists.
+> Run this script **after** ensuring the `multimedia_governance` schema and the `user_details` table already exist (they are owned by the client).
 > `CREATE INDEX IF NOT EXISTS` requires MySQL 8.0.16+.
 
 ```sql
 -- =============================================================================
 -- WorkflowOS — Database Schema
--- Applies to: workflow_engine database
--- NOTE: The `users` table is assumed to already exist.
---       This script creates all other tables only.
--- Run with: mysql -u wfuser -p workflow_engine < schema.sql
+-- Target schema : multimedia_governance
+-- NOTE: `multimedia_governance.user_details` (with primary key `userId`) is
+--       assumed to already exist. This script creates all workflow tables only.
+-- Run with: mysql -u wfuser -p < schema.sql
 -- =============================================================================
 
 SET FOREIGN_KEY_CHECKS = 0;
 
+-- Make sure the schema exists
+CREATE SCHEMA IF NOT EXISTS multimedia_governance;
+
+USE multimedia_governance;
+
 -- -----------------------------------------------------------------------------
 -- approver_groups
 -- -----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS approver_groups (
+CREATE TABLE IF NOT EXISTS multimedia_governance.approver_groups (
     id          INT AUTO_INCREMENT PRIMARY KEY,
     name        VARCHAR(100) NOT NULL,
     description TEXT,
@@ -865,21 +880,21 @@ CREATE TABLE IF NOT EXISTS approver_groups (
 -- -----------------------------------------------------------------------------
 -- approver_group_members
 -- -----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS approver_group_members (
+CREATE TABLE IF NOT EXISTS multimedia_governance.approver_group_members (
     id       INT AUTO_INCREMENT PRIMARY KEY,
     group_id INT NOT NULL,
-    user_id  INT NOT NULL,
+    user_id  BIGINT NOT NULL,
     CONSTRAINT fk_agm_group FOREIGN KEY (group_id)
-        REFERENCES approver_groups (id) ON DELETE CASCADE,
+        REFERENCES multimedia_governance.approver_groups (id) ON DELETE CASCADE,
     CONSTRAINT fk_agm_user  FOREIGN KEY (user_id)
-        REFERENCES users (id) ON DELETE CASCADE,
+        REFERENCES multimedia_governance.user_details (userId) ON DELETE CASCADE,
     UNIQUE KEY uq_group_user (group_id, user_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- -----------------------------------------------------------------------------
 -- workflows
 -- -----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS workflows (
+CREATE TABLE IF NOT EXISTS multimedia_governance.workflows (
     id                   INT AUTO_INCREMENT PRIMARY KEY,
     name                 VARCHAR(200) NOT NULL,
     description          TEXT,
@@ -891,17 +906,17 @@ CREATE TABLE IF NOT EXISTS workflows (
     notification_channel ENUM('email','slack','both') NOT NULL DEFAULT 'email',
     auto_approve_hours   INT,
     amount_threshold     DOUBLE,
-    created_by_id        INT,
+    created_by_id        BIGINT,
     created_at           DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     updated_at           DATETIME(6) ON UPDATE CURRENT_TIMESTAMP(6),
     CONSTRAINT fk_wf_created_by FOREIGN KEY (created_by_id)
-        REFERENCES users (id)
+        REFERENCES multimedia_governance.user_details (userId)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- -----------------------------------------------------------------------------
 -- workflow_stages
 -- -----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS workflow_stages (
+CREATE TABLE IF NOT EXISTS multimedia_governance.workflow_stages (
     id                INT AUTO_INCREMENT PRIMARY KEY,
     workflow_id       INT NOT NULL,
     name              VARCHAR(200) NOT NULL,
@@ -914,15 +929,15 @@ CREATE TABLE IF NOT EXISTS workflow_stages (
     condition_op      VARCHAR(20),
     condition_value   VARCHAR(300),
     CONSTRAINT fk_ws_workflow FOREIGN KEY (workflow_id)
-        REFERENCES workflows (id) ON DELETE CASCADE,
+        REFERENCES multimedia_governance.workflows (id) ON DELETE CASCADE,
     CONSTRAINT fk_ws_group   FOREIGN KEY (approver_group_id)
-        REFERENCES approver_groups (id)
+        REFERENCES multimedia_governance.approver_groups (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- -----------------------------------------------------------------------------
 -- workflow_requests
 -- -----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS workflow_requests (
+CREATE TABLE IF NOT EXISTS multimedia_governance.workflow_requests (
     id            INT AUTO_INCREMENT PRIMARY KEY,
     title         VARCHAR(300) NOT NULL,
     description   TEXT,
@@ -932,7 +947,7 @@ CREATE TABLE IF NOT EXISTS workflow_requests (
     department    VARCHAR(100),
     request_type  VARCHAR(100),
     workflow_id   INT,
-    submitter_id  INT,
+    submitter_id  BIGINT,
     status        ENUM('pending','approved','rejected','escalated','cancelled')
                       NOT NULL DEFAULT 'pending',
     current_stage INT NOT NULL DEFAULT 0,
@@ -940,15 +955,15 @@ CREATE TABLE IF NOT EXISTS workflow_requests (
     resolved_at   DATETIME(6),
     sla_deadline  DATETIME(6),
     CONSTRAINT fk_wr_workflow  FOREIGN KEY (workflow_id)
-        REFERENCES workflows (id),
+        REFERENCES multimedia_governance.workflows (id),
     CONSTRAINT fk_wr_submitter FOREIGN KEY (submitter_id)
-        REFERENCES users (id)
+        REFERENCES multimedia_governance.user_details (userId)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- -----------------------------------------------------------------------------
 -- request_stages
 -- -----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS request_stages (
+CREATE TABLE IF NOT EXISTS multimedia_governance.request_stages (
     id              INT AUTO_INCREMENT PRIMARY KEY,
     request_id      INT NOT NULL,
     stage_id        INT,
@@ -960,50 +975,50 @@ CREATE TABLE IF NOT EXISTS request_stages (
     sla_deadline    DATETIME(6),
     is_sla_breached TINYINT(1) NOT NULL DEFAULT 0,
     CONSTRAINT fk_rs_request FOREIGN KEY (request_id)
-        REFERENCES workflow_requests (id) ON DELETE CASCADE,
+        REFERENCES multimedia_governance.workflow_requests (id) ON DELETE CASCADE,
     CONSTRAINT fk_rs_stage   FOREIGN KEY (stage_id)
-        REFERENCES workflow_stages (id)
+        REFERENCES multimedia_governance.workflow_stages (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- -----------------------------------------------------------------------------
 -- approval_actions
 -- -----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS approval_actions (
+CREATE TABLE IF NOT EXISTS multimedia_governance.approval_actions (
     id               INT AUTO_INCREMENT PRIMARY KEY,
     request_stage_id INT NOT NULL,
-    approver_id      INT,
+    approver_id      BIGINT,
     decision         ENUM('approved','rejected','delegated') NOT NULL,
     comment          TEXT,
-    delegated_to_id  INT,
+    delegated_to_id  BIGINT,
     acted_at         DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     CONSTRAINT fk_aa_stage     FOREIGN KEY (request_stage_id)
-        REFERENCES request_stages (id) ON DELETE CASCADE,
+        REFERENCES multimedia_governance.request_stages (id) ON DELETE CASCADE,
     CONSTRAINT fk_aa_approver  FOREIGN KEY (approver_id)
-        REFERENCES users (id),
+        REFERENCES multimedia_governance.user_details (userId),
     CONSTRAINT fk_aa_delegated FOREIGN KEY (delegated_to_id)
-        REFERENCES users (id)
+        REFERENCES multimedia_governance.user_details (userId)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- -----------------------------------------------------------------------------
 -- activity_log
 -- -----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS activity_log (
+CREATE TABLE IF NOT EXISTS multimedia_governance.activity_log (
     id         INT AUTO_INCREMENT PRIMARY KEY,
     request_id INT,
-    user_id    INT,
+    user_id    BIGINT,
     action     VARCHAR(100) NOT NULL,
     detail     TEXT,
     created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     CONSTRAINT fk_al_request FOREIGN KEY (request_id)
-        REFERENCES workflow_requests (id) ON DELETE CASCADE,
+        REFERENCES multimedia_governance.workflow_requests (id) ON DELETE CASCADE,
     CONSTRAINT fk_al_user    FOREIGN KEY (user_id)
-        REFERENCES users (id)
+        REFERENCES multimedia_governance.user_details (userId)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- -----------------------------------------------------------------------------
 -- webhook_configs
 -- -----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS webhook_configs (
+CREATE TABLE IF NOT EXISTS multimedia_governance.webhook_configs (
     id          INT AUTO_INCREMENT PRIMARY KEY,
     workflow_id INT,
     event       VARCHAR(100) NOT NULL,
@@ -1012,22 +1027,22 @@ CREATE TABLE IF NOT EXISTS webhook_configs (
     is_active   TINYINT(1) NOT NULL DEFAULT 1,
     created_at  DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     CONSTRAINT fk_wc_workflow FOREIGN KEY (workflow_id)
-        REFERENCES workflows (id) ON DELETE CASCADE
+        REFERENCES multimedia_governance.workflows (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- -----------------------------------------------------------------------------
 -- Useful indexes
 -- -----------------------------------------------------------------------------
-CREATE INDEX IF NOT EXISTS idx_wr_status    ON workflow_requests (status);
-CREATE INDEX IF NOT EXISTS idx_wr_submitter ON workflow_requests (submitter_id);
-CREATE INDEX IF NOT EXISTS idx_wr_workflow  ON workflow_requests (workflow_id);
-CREATE INDEX IF NOT EXISTS idx_rs_request   ON request_stages (request_id);
-CREATE INDEX IF NOT EXISTS idx_rs_status    ON request_stages (status);
-CREATE INDEX IF NOT EXISTS idx_rs_sla       ON request_stages (sla_deadline, is_sla_breached);
-CREATE INDEX IF NOT EXISTS idx_aa_stage     ON approval_actions (request_stage_id);
-CREATE INDEX IF NOT EXISTS idx_aa_approver  ON approval_actions (approver_id);
-CREATE INDEX IF NOT EXISTS idx_al_request   ON activity_log (request_id);
-CREATE INDEX IF NOT EXISTS idx_al_created   ON activity_log (created_at);
+CREATE INDEX IF NOT EXISTS idx_wr_status    ON multimedia_governance.workflow_requests (status);
+CREATE INDEX IF NOT EXISTS idx_wr_submitter ON multimedia_governance.workflow_requests (submitter_id);
+CREATE INDEX IF NOT EXISTS idx_wr_workflow  ON multimedia_governance.workflow_requests (workflow_id);
+CREATE INDEX IF NOT EXISTS idx_rs_request   ON multimedia_governance.request_stages (request_id);
+CREATE INDEX IF NOT EXISTS idx_rs_status    ON multimedia_governance.request_stages (status);
+CREATE INDEX IF NOT EXISTS idx_rs_sla       ON multimedia_governance.request_stages (sla_deadline, is_sla_breached);
+CREATE INDEX IF NOT EXISTS idx_aa_stage     ON multimedia_governance.approval_actions (request_stage_id);
+CREATE INDEX IF NOT EXISTS idx_aa_approver  ON multimedia_governance.approval_actions (approver_id);
+CREATE INDEX IF NOT EXISTS idx_al_request   ON multimedia_governance.activity_log (request_id);
+CREATE INDEX IF NOT EXISTS idx_al_created   ON multimedia_governance.activity_log (created_at);
 
 SET FOREIGN_KEY_CHECKS = 1;
 ```

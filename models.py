@@ -52,9 +52,9 @@ class NotificationChannel(str, enum.Enum):
 # ─── Models ───────────────────────────────────────────────────────────────────
 
 class User(Base):
-    __tablename__ = "users"
+    __tablename__ = "user_details"
 
-    id               = Column(Integer, primary_key=True, index=True)
+    id               = Column("userId", Integer, primary_key=True, index=True)
     name             = Column(String(100), nullable=False)
     email            = Column(String(150), unique=True, nullable=False, index=True)
     hashed_password  = Column(String(255), nullable=False)
@@ -62,7 +62,7 @@ class User(Base):
     department       = Column(String(100))
     is_active        = Column(Boolean, default=True)
     ooo_until        = Column(DateTime, nullable=True)
-    delegate_id      = Column(Integer, ForeignKey("users.id"), nullable=True)
+    delegate_id      = Column(Integer, ForeignKey("user_details.userId"), nullable=True)
     created_at       = Column(DateTime(timezone=True), server_default=func.now())
 
     delegate               = relationship("User", remote_side=[id])
@@ -87,7 +87,7 @@ class ApproverGroupMember(Base):
 
     id       = Column(Integer, primary_key=True, index=True)
     group_id = Column(Integer, ForeignKey("approver_groups.id", ondelete="CASCADE"))
-    user_id  = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"))
+    user_id  = Column(Integer, ForeignKey("user_details.userId", ondelete="CASCADE"))
 
     group    = relationship("ApproverGroup", back_populates="members")
     user     = relationship("User")
@@ -109,7 +109,7 @@ class Workflow(Base):
     auto_approve_hours   = Column(Integer, nullable=True)
     amount_threshold     = Column(Float, nullable=True)
 
-    created_by_id        = Column(Integer, ForeignKey("users.id"))
+    created_by_id        = Column(Integer, ForeignKey("user_details.userId"))
     created_at           = Column(DateTime(timezone=True), server_default=func.now())
     updated_at           = Column(DateTime(timezone=True), onupdate=func.now())
 
@@ -156,7 +156,7 @@ class WorkflowRequest(Base):
     request_type  = Column(String(100))
 
     workflow_id   = Column(Integer, ForeignKey("workflows.id"))
-    submitter_id  = Column(Integer, ForeignKey("users.id"))
+    submitter_id  = Column(Integer, ForeignKey("user_details.userId"))
     status        = Column(SAEnum(RequestStatus), default=RequestStatus.pending)
     current_stage = Column(Integer, default=0)
 
@@ -248,10 +248,10 @@ class ApprovalAction(Base):
 
     id               = Column(Integer, primary_key=True, index=True)
     request_stage_id = Column(Integer, ForeignKey("request_stages.id", ondelete="CASCADE"))
-    approver_id      = Column(Integer, ForeignKey("users.id"))
+    approver_id      = Column(Integer, ForeignKey("user_details.userId"))
     decision         = Column(SAEnum(ApprovalDecision), nullable=False)
     comment          = Column(Text)
-    delegated_to_id  = Column(Integer, ForeignKey("users.id"), nullable=True)
+    delegated_to_id  = Column(Integer, ForeignKey("user_details.userId"), nullable=True)
     acted_at         = Column(DateTime(timezone=True), server_default=func.now())
 
     request_stage    = relationship("RequestStage", back_populates="actions")
@@ -264,7 +264,7 @@ class ActivityLog(Base):
 
     id          = Column(Integer, primary_key=True, index=True)
     request_id  = Column(Integer, ForeignKey("workflow_requests.id", ondelete="CASCADE"))
-    user_id     = Column(Integer, ForeignKey("users.id"), nullable=True)
+    user_id     = Column(Integer, ForeignKey("user_details.userId"), nullable=True)
     action      = Column(String(100), nullable=False)
     detail      = Column(Text)
     created_at  = Column(DateTime(timezone=True), server_default=func.now())
