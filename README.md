@@ -812,40 +812,6 @@ Starts automatically with the FastAPI app (via `lifespan`) and stops cleanly on 
 | DB | MySQL 8+ |
 
 ---
-
-## Changelog
-
-### June 2026 (Branch: abhyu)
-
-**Migrated to client `multimedia_governance` schema**
-- `database.py`: `Base` is now initialised with `MetaData(schema="multimedia_governance")` so all tables are automatically scoped to this schema without per-model `__table_args__`.
-- `models.py` — `User` model:
-  - `__tablename__` changed from `users` → `user_details`.
-  - Primary key column mapped as `Column("userId", Integer, ...)` to match the client's `userId` column (Python attribute remains `.id` to avoid cascading renames).
-- `models.py` — all other models: every `ForeignKey("users.id")` reference updated to `ForeignKey("user_details.userId")`.
-- SQL script at the bottom of this file updated: all `CREATE TABLE` statements now target `multimedia_governance.*`, and all `REFERENCES users (id)` constraints now reference `multimedia_governance.user_details (userId)`.
-
-**Removed: `POST /api/auth/register` and JWT middleware**
-- `/api/auth/register` endpoint removed entirely.
-- `get_current_user` JWT dependency removed from all routes.
-- All protected routes now accept `?user_id=<integer>` query param. The backend resolves the user from the DB and enforces role checks directly.
-
-**Per-member email approval tokens**
-- `create_approval_token()` embeds `approver_id` in the JWT payload.
-- `_fire_stage_notification()` generates one personal token pair per group member.
-- `one_click_action()` reads `approver_id` from the token for precise member resolution.
-
-**Stage-type-aware email buttons**
-- Button labels and subject line adapt per stage type (Approve/Reject, Mark Reviewed/Request Changes, Acknowledge/Decline, Sign/Refuse).
-
-**First-stage notification on submit**
-- `submit_request()` now fires stage-1 notifications immediately after commit.
-
-**Async email in sync handlers**
-- Replaced `asyncio.create_task()` with `_run_async()` daemon thread pattern.
-
----
-
 ## SQL Script
 
 > Run this script **after** ensuring the `multimedia_governance` schema and the `user_details` table already exist (they are owned by the client).
