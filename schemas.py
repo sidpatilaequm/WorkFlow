@@ -143,7 +143,7 @@ class RequestCreate(BaseModel):
 
 class RequestStageOut(BaseModel):
     id: int
-    stage_id: int
+    stage_id: Optional[int] = None
     stage_order: int
     stage_name: Optional[str] = None
     stage_type: Optional[str] = None
@@ -165,9 +165,9 @@ class RequestOut(BaseModel):
     document_url: Optional[str] = None
     amount: Optional[float] = None
     department: Optional[str] = None
-    workflow_id: int
+    workflow_id: Optional[int] = None
     workflow_name: Optional[str] = None
-    submitter_id: int
+    submitter_id: Optional[int] = None
     submitter_name: Optional[str] = None
     status: RequestStatus
     current_stage: int
@@ -205,7 +205,7 @@ class ApprovalActionOut(BaseModel):
 
 class ActivityLogOut(BaseModel):
     id: int
-    request_id: int
+    request_id: Optional[int] = None
     action: str
     detail: Optional[str]
     created_at: datetime

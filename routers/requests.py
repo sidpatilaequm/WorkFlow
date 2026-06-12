@@ -9,6 +9,7 @@ from database import get_db
 from schemas import RequestCreate, RequestOut
 from auth_utils import get_current_user, require_role, decode_approval_token
 import models
+from routers.approvals import _fire_stage_notification, _run_async
 
 router = APIRouter()
 
@@ -105,6 +106,21 @@ def submit_request(
 
     db.commit()
     db.refresh(req)
+
+    # Fire email notification for the first stage after commit
+    if sorted_stages:
+        first_stage_def = sorted_stages[0]
+        first_request_stage = (
+            db.query(models.RequestStage)
+            .filter(
+                models.RequestStage.request_id == req.id,
+                models.RequestStage.stage_order == first_stage_def.order,
+            )
+            .first()
+        )
+        if first_request_stage:
+            _fire_stage_notification(db, req, first_request_stage, first_stage_def)
+
     return req
 
 
@@ -223,6 +239,7 @@ def one_click_action(
     request_id = payload["request_id"]
     stage_order = payload["stage_order"]
     action_str = payload["action"]
+    approver_id = payload.get("approver_id")
 
     req = db.query(models.WorkflowRequest).filter(models.WorkflowRequest.id == request_id).first()
     if not req:
@@ -247,12 +264,23 @@ def one_click_action(
         models.WorkflowStage.id == active_stage.stage_id
     ).first()
 
-    # Find first approver in the group to record the action against
-    member = (
-        db.query(models.ApproverGroupMember)
-        .filter(models.ApproverGroupMember.group_id == stage_def.approver_group_id)
-        .first()
-    ) if stage_def else None
+    # Resolve which approver is acting — use token's approver_id if present,
+    # otherwise fall back to first group member (legacy tokens / any-vote stages)
+    if approver_id:
+        member = (
+            db.query(models.ApproverGroupMember)
+            .filter(
+                models.ApproverGroupMember.group_id == stage_def.approver_group_id,
+                models.ApproverGroupMember.user_id == approver_id,
+            )
+            .first()
+        ) if stage_def else None
+    else:
+        member = (
+            db.query(models.ApproverGroupMember)
+            .filter(models.ApproverGroupMember.group_id == stage_def.approver_group_id)
+            .first()
+        ) if stage_def else None
 
     if not member:
         raise HTTPException(400, "No approver found for this stage")

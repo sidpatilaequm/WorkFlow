@@ -47,13 +47,14 @@ def create_refresh_token(user_id: int) -> str:
     return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
 
 
-def create_approval_token(request_id: int, stage_order: int, action: str) -> str:
+def create_approval_token(request_id: int, stage_order: int, action: str, approver_id: int) -> str:
     """Signed token embedded in approval email links (valid 3 days)."""
     expire = datetime.now(timezone.utc) + timedelta(days=3)
     payload = {
         "request_id": request_id,
         "stage_order": stage_order,
         "action": action,
+        "approver_id": approver_id,
         "exp": expire,
         "type": "approval_link",
     }

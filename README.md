@@ -21,11 +21,12 @@ Full-stack: **FastAPI + MySQL** backend · **React + Vite** frontend.
 7. [Authentication](#authentication)
 8. [Role-Based Access](#role-based-access)
 9. [Workflow Engine Logic](#workflow-engine-logic)
-10. [Notifications & Webhooks](#notifications--webhooks)
-11. [Background Jobs (Scheduler)](#background-jobs-scheduler)
-12. [Error Responses](#error-responses)
-13. [Tech Stack](#tech-stack)
-14. [Roadmap](#roadmap)
+10. [Stage Types & Email Actions](#stage-types--email-actions)
+11. [Notifications & Webhooks](#notifications--webhooks)
+12. [Background Jobs (Scheduler)](#background-jobs-scheduler)
+13. [Error Responses](#error-responses)
+14. [Tech Stack](#tech-stack)
+15. [Changelog](#changelog)
 
 ---
 
@@ -34,12 +35,12 @@ Full-stack: **FastAPI + MySQL** backend · **React + Vite** frontend.
 | Module | What's built |
 |---|---|
 | **Auth** | JWT login/register, access + refresh tokens, role-based access (submitter / approver / admin) |
-| **Workflows** | CRUD, 4 stage types (approval/review/acknowledgement/signature), folder triggers, amount-based auto-approve |
-| **Stages** | Per-stage SLA deadlines, voting rules (any/all/sequential), per-stage conditional branching |
+| **Workflows** | CRUD, 4 stage types (approval / review / acknowledgement / signature), folder triggers, amount-based auto-approve |
+| **Stages** | Per-stage SLA deadlines, voting rules (any / all / sequential), per-stage conditional branching |
 | **Requests** | Submit with document upload, cancel, track with live stage progress, one-click email approval |
-| **Approvals** | Approve / reject / delegate, rejection behaviors (stop/restart/escalate), duplicate prevention |
+| **Approvals** | Approve / reject / delegate, rejection behaviors (stop / restart / escalate), duplicate prevention |
 | **Analytics** | Approval rate, avg resolution time, SLA breach count, by-workflow breakdown, approver performance, activity feed |
-| **Notifications** | Async SMTP email with approve/reject buttons, Slack Block Kit DMs |
+| **Notifications** | Async SMTP email with stage-type-aware action buttons, Slack Block Kit DMs |
 | **Webhooks** | HMAC-signed outgoing payloads, Slack interactive button handler |
 | **Scheduler** | APScheduler jobs: SLA escalation every 15 min, pending-approver reminders every hour |
 
@@ -54,7 +55,7 @@ Vendors_Workflow/
     ├── database.py              # SQLAlchemy engine + session factory
     ├── models.py                # All ORM models (10 tables)
     ├── schemas.py               # Pydantic request/response schemas
-    ├── auth_utils.py            # JWT (access + refresh + approval tokens), bcrypt, role guards
+    ├── auth_utils.py            # JWT (access + refresh + approval tokens w/ approver_id), bcrypt, role guards
     ├── webhook_utils.py         # Outgoing webhook dispatcher + Slack Block Kit builder
     ├── requirements.txt
     ├── alembic.ini
@@ -94,9 +95,9 @@ workflows
   created_by_id → users.id, created_at, updated_at
 
 workflow_stages
-  id, workflow_id → workflows.id, name, type, order,
-  approver_group_id → approver_groups.id, sla_hours, voting_rule(any|all|sequential),
-  condition_field, condition_op, condition_value
+  id, workflow_id → workflows.id, name, type(approval|review|acknowledgement|signature),
+  order, approver_group_id → approver_groups.id, sla_hours,
+  voting_rule(any|all|sequential), condition_field, condition_op, condition_value
 
 workflow_requests
   id, title, description, document_name, document_url, amount, department,
@@ -330,8 +331,6 @@ Exchange a valid refresh token for a new access + refresh token pair.
 
 Return the currently authenticated user's profile.
 
-**Headers** `Authorization: Bearer <token>`
-
 **Response `200`** — same shape as `UserOut` above.
 
 ---
@@ -340,52 +339,17 @@ Return the currently authenticated user's profile.
 
 #### `GET /api/workflows/`
 
-List all workflows. Returns all regardless of `is_active` status.
+List all workflows.
 
 **Auth** any role
 
-**Response `200`**
-```json
-[
-  {
-    "id": 1,
-    "name": "Vendor Invoice Approval",
-    "description": null,
-    "type": "approval",
-    "folder_trigger": "/Finance/Invoices",
-    "is_active": true,
-    "escalation_hours": 24,
-    "rejection_behavior": "stop",
-    "notification_channel": "email",
-    "auto_approve_hours": null,
-    "created_at": "2026-06-01T10:00:00",
-    "stages": [
-      {
-        "id": 1,
-        "name": "Finance Review",
-        "type": "approval",
-        "order": 1,
-        "approver_group_id": 1,
-        "sla_hours": 48,
-        "voting_rule": "any",
-        "condition_field": null,
-        "condition_op": null,
-        "condition_value": null
-      }
-    ]
-  }
-]
-```
+**Response `200`** — array of workflow objects including their stages.
 
 ---
 
 #### `GET /api/workflows/{wf_id}`
 
 Fetch a single workflow by ID.
-
-**Auth** any role
-
-**Response `200`** — same shape as above (single object).
 
 **Response `404`** — `{"detail": "Workflow not found"}`
 
@@ -401,25 +365,19 @@ Create a new workflow with its stages in one call.
 ```json
 {
   "name": "HR Onboarding Approval",
-  "description": "Multi-stage HR document sign-off",
   "type": "approval",
-  "folder_trigger": "/HR/Onboarding",
   "escalation_hours": 24,
   "rejection_behavior": "restart",
   "notification_channel": "both",
-  "auto_approve_hours": null,
   "amount_threshold": 5000.00,
   "stages": [
     {
       "name": "HR Manager Review",
-      "type": "approval",
+      "type": "review",
       "order": 1,
       "approver_group_id": 2,
       "sla_hours": 24,
-      "voting_rule": "any",
-      "condition_field": null,
-      "condition_op": null,
-      "condition_value": null
+      "voting_rule": "any"
     },
     {
       "name": "Director Sign-off",
@@ -433,57 +391,21 @@ Create a new workflow with its stages in one call.
 }
 ```
 
-**Fields**
+**Stage types** — each stage independently sets its own type, which drives email button labels (see [Stage Types & Email Actions](#stage-types--email-actions)).
 
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `name` | string | ✓ | Workflow display name |
-| `type` | enum | ✓ | `approval` · `review` · `acknowledgement` · `signature` |
-| `description` | string | | Optional description |
-| `folder_trigger` | string | | Path to watch for auto-submission |
-| `escalation_hours` | int | | Hours before SLA escalation (default 24) |
-| `rejection_behavior` | enum | | `stop` · `restart` · `escalate` (default `stop`) |
-| `notification_channel` | enum | | `email` · `slack` · `both` (default `email`) |
-| `amount_threshold` | float | | Requests at or below this amount are auto-approved |
-| `stages` | array | | Stage definitions — see stage fields below |
+**Voting rules** — `any` (one approval suffices) · `all` (every group member must act) · `sequential` (last action wins).
 
-**Stage fields**
+When `voting_rule` is `all`, each group member receives their own individually signed email link. The backend records each approval against that specific member. The stage only completes once `approved_count == group_member_count`.
 
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `name` | string | ✓ | Stage display name |
-| `type` | enum | ✓ | Same enum as workflow type |
-| `order` | int | ✓ | Execution order (1-based, must be unique per workflow) |
-| `approver_group_id` | int | ✓ | ID of the approver group for this stage |
-| `sla_hours` | int | | Hours until SLA breach (default 48) |
-| `voting_rule` | enum | | `any` · `all` · `sequential` (default `any`) |
-| `condition_field` | string | | Field to evaluate for conditional routing: `amount` · `department` · `request_type` |
-| `condition_op` | string | | Operator: `eq` · `lt` · `lte` · `gt` · `gte` · `contains` |
-| `condition_value` | string | | Value to compare against |
-
-**Response `200`** — full workflow object including generated IDs.
+**Response `200`** — full workflow object with generated IDs.
 
 ---
 
 #### `PATCH /api/workflows/{wf_id}`
 
-Partially update a workflow. Pass only the fields you want to change.
+Partially update a workflow. If `stages` is included, all existing stages are replaced.
 
 **Auth** admin only
-
-**Request body** (all fields optional)
-```json
-{
-  "name": "Updated Name",
-  "is_active": false,
-  "escalation_hours": 48,
-  "stages": [ ... ]
-}
-```
-
-If `stages` is included, all existing stages are deleted and replaced with the provided list.
-
-**Response `200`** — updated workflow object.
 
 ---
 
@@ -502,8 +424,6 @@ Delete a workflow and all its stages (cascade).
 #### `GET /api/stages/approver-groups`
 
 List all approver groups with their members.
-
-**Auth** any role
 
 **Response `200`**
 ```json
@@ -527,88 +447,33 @@ Create an approver group, optionally pre-populating members.
 
 **Auth** admin only
 
-**Request body**
 ```json
-{
-  "name": "Legal Team",
-  "description": "Legal department reviewers",
-  "member_ids": [4, 5]
-}
+{ "name": "Legal Team", "description": "Legal department reviewers", "member_ids": [4, 5] }
 ```
-
-**Response `200`** — created group with members array.
 
 ---
 
 #### `DELETE /api/stages/approver-groups/{group_id}`
 
-Delete an approver group. Stages referencing this group will lose their approver assignment.
-
-**Auth** admin only
-
-**Response `200`** — `{"detail": "Deleted"}`
+Delete an approver group. **Auth** admin only.
 
 ---
 
 #### `POST /api/stages/approver-groups/{group_id}/members`
 
-Add a user to an existing approver group.
-
-**Auth** admin only
-
-**Request body**
-```json
-{ "user_id": 6 }
-```
-
-**Response `200`** — `{"detail": "Member added"}`
+Add a user to a group. **Auth** admin only. Body: `{ "user_id": 6 }`
 
 ---
 
 #### `DELETE /api/stages/approver-groups/{group_id}/members/{user_id}`
 
-Remove a user from an approver group.
-
-**Auth** admin only
-
-**Response `200`** — `{"detail": "Member removed"}`
+Remove a user from a group. **Auth** admin only.
 
 ---
 
 #### `GET /api/stages/users`
 
-List all active users. Used when building approver groups.
-
-**Auth** admin only
-
-**Response `200`**
-```json
-[
-  { "id": 2, "name": "Finance Approver", "email": "finance@co.com", "role": "approver", "department": "Finance" }
-]
-```
-
----
-
-#### `POST /api/stages/{wf_id}/stages`
-
-Add a single stage to an existing workflow.
-
-**Auth** admin only
-
-**Request body** — same shape as the stage object in workflow creation.
-
-**Response `200`** — created stage.
-
----
-
-#### `DELETE /api/stages/{stage_id}`
-
-Delete a workflow stage by its ID.
-
-**Auth** admin only
-
-**Response `200`** — `{"detail": "Deleted"}`
+List all active users. **Auth** admin only.
 
 ---
 
@@ -616,9 +481,7 @@ Delete a workflow stage by its ID.
 
 #### `POST /api/requests/upload`
 
-Upload a document file before submitting a request. Returns the stored URL to pass into request creation.
-
-**Auth** any role
+Upload a document before submitting a request.
 
 **Request** `multipart/form-data` with field `file`.
 
@@ -630,15 +493,15 @@ Upload a document file before submitting a request. Returns the stored URL to pa
 }
 ```
 
-Uploaded files are served statically at `/api/uploads/<filename>`.
+Files are served statically at `/api/uploads/<filename>`.
 
 ---
 
 #### `POST /api/requests/`
 
-Submit a new workflow request. Automatically starts the first stage and writes an activity log entry. If the request amount is at or below the workflow's `amount_threshold`, the request is auto-approved immediately without going through stages.
+Submit a new workflow request. Starts stage 1 immediately and emails all members of that stage's approver group.
 
-**Auth** any role
+If `amount <= workflow.amount_threshold`, the request is auto-approved without going through stages.
 
 **Request body**
 ```json
@@ -646,7 +509,7 @@ Submit a new workflow request. Automatically starts the first stage and writes a
   "title": "Vendor Invoice - Infosys Q2",
   "description": "Quarterly software maintenance invoice",
   "document_name": "Invoice_Q2_Infosys.pdf",
-  "document_url": "/uploads/3ca56133-c9f2-4a19-aae4-f06b2f3ffbe9.pdf",
+  "document_url": "/uploads/3ca56133.pdf",
   "amount": 250000.00,
   "department": "Finance",
   "request_type": "invoice",
@@ -654,39 +517,19 @@ Submit a new workflow request. Automatically starts the first stage and writes a
 }
 ```
 
-**Response `201`** — full `RequestOut` object (see below).
+**Response `201`** — full `RequestOut` object.
 
 ---
 
 #### `GET /api/requests/`
 
-List requests visible to the current user.
-
-- **Admin** — all requests
-- **Approver** — requests on workflows where they are in an approver group, plus their own submissions
-- **Submitter** — own submissions only
-
-**Auth** any role
-
-**Query parameters**
-
-| Param | Type | Description |
-|---|---|---|
-| `status` | string | Filter by status: `pending` · `approved` · `rejected` · `escalated` · `cancelled` |
-| `workflow_id` | int | Filter by workflow |
-
-**Response `200`** — array of `RequestOut` objects.
+List requests visible to the current user (scoped by role). Supports `?status=` and `?workflow_id=` filters.
 
 **`RequestOut` shape**
 ```json
 {
   "id": 42,
   "title": "Vendor Invoice - Infosys Q2",
-  "description": "Quarterly software maintenance invoice",
-  "document_name": "Invoice_Q2_Infosys.pdf",
-  "document_url": "/uploads/3ca56133.pdf",
-  "amount": 250000.00,
-  "department": "Finance",
   "workflow_id": 1,
   "workflow_name": "Vendor Invoice Approval",
   "submitter_id": 3,
@@ -696,12 +539,10 @@ List requests visible to the current user.
   "total_stages": 2,
   "submitted_at": "2026-06-11T08:00:00",
   "resolved_at": null,
-  "sla_deadline": null,
   "pending_group_name": "Finance Team",
   "stages": [
     {
       "id": 7,
-      "stage_id": 1,
       "stage_order": 1,
       "stage_name": "Finance Review",
       "stage_type": "approval",
@@ -730,11 +571,7 @@ List requests visible to the current user.
 
 #### `GET /api/requests/{req_id}`
 
-Fetch a single request by ID. Access rules are the same as the list endpoint.
-
-**Auth** any role (scoped by role)
-
-**Response `200`** — `RequestOut` object.
+Fetch a single request. Access is scoped: submitters see their own, approvers see requests on their workflows.
 
 **Response `403`** — if the caller is not the submitter and is not in any approver group for this workflow.
 
@@ -742,9 +579,7 @@ Fetch a single request by ID. Access rules are the same as the list endpoint.
 
 #### `PATCH /api/requests/{req_id}/cancel`
 
-Cancel a pending request. Only the original submitter or an admin may cancel. Requests that are already approved, rejected, escalated, or cancelled cannot be cancelled.
-
-**Auth** submitter (own) or admin
+Cancel a pending request. Only the submitter or an admin may cancel.
 
 **Response `200`** — `{"detail": "Request cancelled"}`
 
@@ -752,27 +587,24 @@ Cancel a pending request. Only the original submitter or an admin may cancel. Re
 
 #### `GET /api/requests/action/{token}`
 
-One-click approve or reject from an email link. No login required. The signed token (generated by `create_approval_token`) encodes the request ID, stage order, and action.
+One-click action handler for email links. No login required.
 
-**Auth** none — token is self-contained
-
-**URL example**
-```
-GET /api/requests/action/eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
-```
+The token encodes `request_id`, `stage_order`, `action` (`approved` or `rejected`), and `approver_id`. This ensures that in `voting_rule = all` stages, each member's click is recorded against their own identity rather than a shared placeholder.
 
 **Behavior**
-1. Decodes and validates the JWT (type must be `approval_link`, expiry checked).
-2. Verifies the target stage is still pending.
-3. Records the approval action against the first member of the stage's approver group.
-4. Calls the same stage-completion logic as a normal approval.
-5. Returns the updated `RequestOut`.
+1. Decode and validate the JWT (`type = approval_link`, expiry checked).
+2. Verify the target stage is still `pending`.
+3. Resolve the acting member from `approver_id` in the token (falls back to first group member for legacy tokens).
+4. Check for a duplicate action by that specific member.
+5. Write `ApprovalAction` + `ActivityLog`.
+6. Run `_check_stage_completion()` — same logic as the in-app approve flow.
+7. Return the updated `RequestOut`.
 
 **Response `200`** — updated `RequestOut`.
 
-**Response `400`** — if the stage is no longer pending, or the action was already recorded.
+**Response `400`** — stage no longer pending, or action already recorded for this member.
 
-**Response `401`** — if the token is invalid or expired (3-day lifetime).
+**Response `401`** — token invalid or expired (3-day lifetime).
 
 ---
 
@@ -780,7 +612,7 @@ GET /api/requests/action/eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 
 #### `POST /api/approvals/`
 
-Record an approve, reject, or delegate decision for the current stage of a request.
+Record an approve, reject, or delegate decision for the current stage.
 
 **Auth** approver or admin
 
@@ -798,15 +630,15 @@ Record an approve, reject, or delegate decision for the current stage of a reque
 
 When `decision` is `delegated`, `delegated_to_id` (user ID) is required.
 
-**Stage completion rules** (applied automatically after the action is recorded):
+**Stage completion rules**
 
 | Voting rule | Advance when | Reject when |
 |---|---|---|
 | `any` | ≥ 1 approval | ≥ 1 rejection |
-| `all` | all members approved | ≥ 1 rejection |
+| `all` | approved_count == group_member_count | ≥ 1 rejection |
 | `sequential` | most recent action is approved | most recent action is rejected |
 
-**Rejection behaviors** (configured per workflow):
+**Rejection behaviors**
 
 | Behavior | Effect |
 |---|---|
@@ -826,185 +658,37 @@ When `decision` is `delegated`, `delegated_to_id` (user ID) is required.
 }
 ```
 
-**Response `400`** — request is not pending · stage already completed · duplicate action by same user.
-
-**Response `403`** — user is not a member of this stage's approver group.
-
 ---
 
 #### `GET /api/approvals/pending`
 
-Return the IDs of requests that are currently awaiting the calling user's decision.
+Return request IDs awaiting the calling user's decision.
 
-**Auth** any role
+- **Admin** — all pending request IDs
+- **Approver** — IDs where they are in the active stage's group and have not yet acted
 
-- **Admin** — all request IDs with status `pending`
-- **Approver** — request IDs where the user is in the active stage's approver group and has not yet acted
-
-**Response `200`**
-```json
-[42, 47, 51]
-```
+**Response `200`** — `[42, 47, 51]`
 
 ---
 
 ### Analytics
 
-All analytics endpoints accept `?days=N` (1–365, default 30) to scope the time window.
+All analytics endpoints accept `?days=N` (1–365, default 30).
 
----
-
-#### `GET /api/analytics/summary`
-
-High-level metrics for the selected time window.
-
-**Auth** any role
-
-**Query parameters**
-
-| Param | Type | Description |
-|---|---|---|
-| `days` | int | Lookback window in days (default 30, max 365) |
-| `workflow_id` | int | Scope to a single workflow |
-
-**Response `200`**
-```json
-{
-  "total_requests": 120,
-  "pending": 18,
-  "approved": 85,
-  "rejected": 12,
-  "escalated": 5,
-  "approval_rate": 70.8,
-  "avg_resolution_hours": 11.4,
-  "sla_breaches": 7,
-  "recent_activity": [
-    {
-      "id": 201,
-      "request_id": 42,
-      "action": "approved",
-      "detail": "Stage 1 approved by Finance Approver.",
-      "created_at": "2026-06-11T09:30:00",
-      "user": {
-        "id": 2,
-        "name": "Finance Approver",
-        "email": "finance@co.com",
-        "role": "approver",
-        "department": "Finance",
-        "is_active": true
-      }
-    }
-  ]
-}
-```
-
----
-
-#### `GET /api/analytics/by-workflow`
-
-Approval metrics broken down per workflow, sorted by total request volume descending.
-
-**Auth** any role
-
-**Query parameters** — `days` (same as summary)
-
-**Response `200`**
-```json
-[
-  {
-    "workflow_id": 1,
-    "workflow": "Vendor Invoice Approval",
-    "total": 60,
-    "approved": 48,
-    "rejected": 8,
-    "approval_rate_pct": 80.0
-  },
-  {
-    "workflow_id": 2,
-    "workflow": "HR Onboarding Approval",
-    "total": 30,
-    "approved": 22,
-    "rejected": 4,
-    "approval_rate_pct": 73.3
-  }
-]
-```
-
-Workflows with zero requests in the period are omitted.
-
----
-
-#### `GET /api/analytics/approver-performance`
-
-Per-approver decision counts and average response time, sorted by total decisions descending.
-
-**Auth** any role
-
-**Query parameters** — `days` (same as summary)
-
-**Response `200`**
-```json
-[
-  {
-    "approver_id": 2,
-    "approver": "Finance Approver",
-    "email": "finance@co.com",
-    "total_decisions": 45,
-    "approved": 38,
-    "rejected": 5,
-    "delegated": 2,
-    "avg_response_hours": 3.2
-  }
-]
-```
-
-`avg_response_hours` is measured from the stage's `started_at` to the approver's `acted_at`. `null` if no timing data is available.
-
----
-
-#### `GET /api/analytics/activity-feed`
-
-Recent audit trail entries across all requests, with document and actor names resolved.
-
-**Auth** any role
-
-**Query parameters**
-
-| Param | Type | Description |
-|---|---|---|
-| `limit` | int | Max entries to return (default 50, max 200) |
-
-**Response `200`**
-```json
-[
-  {
-    "id": 201,
-    "action": "approved",
-    "document_name": "Invoice_Q2_Infosys.pdf",
-    "request_title": "Vendor Invoice - Infosys Q2",
-    "actor_name": "Finance Approver",
-    "detail": "Stage 1 approved by Finance Approver. Looks good.",
-    "created_at": "2026-06-11T09:30:00"
-  }
-]
-```
-
-`actor_name` is `"System"` for automated actions (escalations, auto-approvals, reminders).
+#### `GET /api/analytics/summary` — high-level metrics
+#### `GET /api/analytics/by-workflow` — per-workflow breakdown
+#### `GET /api/analytics/approver-performance` — per-approver decision counts and avg response time
+#### `GET /api/analytics/activity-feed` — recent audit trail (`?limit=N`, max 200)
 
 ---
 
 ## Authentication
 
-The API uses JWT Bearer tokens.
+**Access tokens** — 60 min by default. Send as `Authorization: Bearer <token>`.
 
-**Access tokens** — short-lived (60 min by default). Send in the `Authorization` header:
-```
-Authorization: Bearer <access_token>
-```
+**Refresh tokens** — 7 days. Use `POST /api/auth/refresh` to renew without re-login.
 
-**Refresh tokens** — long-lived (7 days). Use `POST /api/auth/refresh` to get a new access token without re-entering credentials. Store refresh tokens securely (httpOnly cookie recommended for web clients).
-
-**Approval link tokens** — single-use 3-day tokens embedded in notification emails. They carry `request_id`, `stage_order`, and `action` in the payload and are verified server-side before recording the decision. No `Authorization` header needed.
+**Approval link tokens** — 3-day, signed JWT embedded in notification emails. Carry `request_id`, `stage_order`, `action`, and `approver_id`. Verified server-side; no `Authorization` header needed.
 
 ---
 
@@ -1021,7 +705,7 @@ Authorization: Bearer <access_token>
 | View all requests | — | — | ✓ |
 | Cancel own request | ✓ | ✓ | ✓ |
 | Cancel any request | — | — | ✓ |
-| Approve/reject/delegate | — | ✓ | ✓ |
+| Approve / reject / delegate | — | ✓ | ✓ |
 | View pending approvals | ✓ (empty) | ✓ | ✓ |
 | Approver group CRUD | — | — | ✓ |
 | User list | — | — | ✓ |
@@ -1042,6 +726,7 @@ POST /api/requests/
   └─ NO → Create RequestStage rows for all stages
             Start stage 1: started_at = now, sla_deadline = now + stage.sla_hours
             ActivityLog: submitted
+            Email all members of stage 1's approver group (one personal token per member)
 ```
 
 ### Stage completion (on each approval action)
@@ -1055,8 +740,8 @@ _check_stage_completion(db, request_stage, request)
   │     └─ rejection_behavior = escalate → stage + request status = escalated
   │
   └─ No rejections → check voting rule
-        ├─ any        → approved_count >= 1 → stage approved → advance
-        ├─ all        → approved_count == group_member_count → advance
+        ├─ any        → approved_count >= 1                  → stage approved → advance
+        ├─ all        → approved_count == group_member_count → stage approved → advance
         └─ sequential → last action approved → advance
                         last action rejected → apply rejection_behavior
 
@@ -1065,8 +750,10 @@ _advance_request(db, request)
   │     └─ YES → current_stage = next_stage.order
   │               next_stage.started_at = now
   │               next_stage.sla_deadline = now + stage.sla_hours
+  │               Email all members of next stage's approver group
   │
   └─ NO → request.status = approved, resolved_at = now
+           Email submitter: notify_submitter_completed()
 ```
 
 ### Status values
@@ -1075,9 +762,32 @@ _advance_request(db, request)
 |---|---|
 | `pending` | Awaiting action at the current stage |
 | `approved` | All stages passed, workflow complete |
-| `rejected` | Rejected at a stage (and `rejection_behavior = stop`) |
-| `escalated` | SLA breached or `rejection_behavior = escalate` triggered |
+| `rejected` | Rejected at a stage (rejection_behavior = stop) |
+| `escalated` | SLA breached or rejection_behavior = escalate triggered |
 | `cancelled` | Cancelled by submitter or admin before completion |
+
+---
+
+## Stage Types & Email Actions
+
+Each workflow stage has a `type` that independently controls what the email buttons say and what the subject line reads. The backend maps `stage_type` → labels in `NotificationService.STAGE_TYPE_LABELS`.
+
+| Stage type | Positive button | Negative button | Subject prefix |
+|---|---|---|---|
+| `approval` | ✓ Approve | ✗ Reject | `[Approval Required]` |
+| `review` | ✓ Mark Reviewed | ✗ Request Changes | `[Review Required]` |
+| `acknowledgement` | ✓ Acknowledge | ✗ Decline | `[Acknowledgement Required]` |
+| `signature` | ✓ Sign | ✗ Refuse | `[Signature Required]` |
+
+The stage type is read from `WorkflowStage.type` at notification time and passed into `notify_approvers(stage_type=...)`. An unknown type falls back to the `approval` labels.
+
+### Per-member tokens (voting_rule = all)
+
+When a stage uses `voting_rule = all`, each group member receives their **own personally addressed email** with links that contain their `approver_id` embedded in the JWT. This means:
+
+- Every member must click their own link — no shared link that one person can click for everyone.
+- The duplicate-action guard is per-member, so one person clicking twice is blocked, but it does not block anyone else.
+- The stage only advances once `approved_count == group_member_count`.
 
 ---
 
@@ -1085,57 +795,26 @@ _advance_request(db, request)
 
 ### Email notifications (`services/notification.py`)
 
-Triggered manually or by the scheduler. Configure SMTP credentials in `.env`.
+All email sending is async (`aiosmtplib`). In sync FastAPI route handlers, notifications are dispatched via `_run_async()` — a daemon thread calling `asyncio.run()` — to avoid conflicts with uvicorn's event loop.
 
-- **`notify_approvers()`** — sends an HTML email with inline Approve / Reject buttons to each member of the stage's approver group. Each button links to `GET /api/requests/action/<token>`.
-- **`notify_submitter_completed()`** — notifies the submitter when their request is fully approved or rejected.
-- **`send_email()`** — generic helper used by the escalation job for admin alerts.
+- **`notify_approvers()`** — sends a personalised HTML email to each approver. Button labels and subject line adapt to the stage type. Each email carries that approver's unique signed token.
+- **`notify_submitter_completed()`** — notifies the submitter when the request is fully approved or rejected.
+- **`send_email()`** — generic SMTP helper. Silently skips if `SMTP_USER` / `SMTP_PASSWORD` are not configured.
 
 ### Slack notifications
 
 Configure `SLACK_BOT_TOKEN` in `.env`.
 
-- **`notify_slack_approver()`** — sends a Block Kit message with Approve/Reject buttons to the approver's DM channel. Button clicks are handled by your Slack app's interactive endpoint (implement separately using `webhook_utils.slack_blocks()`).
+- **`notify_slack_approver()`** — sends a Block Kit DM with Approve / Reject buttons.
 - **`send_slack()`** — generic helper for arbitrary channels.
 
 ### Outgoing webhooks (`webhook_utils.py`)
 
-Call `fire_webhook(db, event, request)` after any state change to dispatch to all matching `WebhookConfig` rows.
+**Supported events:** `request.submitted` · `stage.approved` · `stage.rejected` · `stage.escalated` · `request.approved` · `request.rejected` · `request.cancelled`
 
-**Supported events**
-
-| Event | Trigger |
-|---|---|
-| `request.submitted` | New request created |
-| `stage.approved` | A stage was approved |
-| `stage.rejected` | A stage was rejected |
-| `stage.escalated` | SLA breach escalation |
-| `request.approved` | Final approval, workflow complete |
-| `request.rejected` | Rejection with `stop` behavior |
-| `request.cancelled` | Request cancelled |
-
-**Payload envelope**
-```json
-{
-  "event": "stage.approved",
-  "timestamp": 1718000000,
-  "request": {
-    "id": 42,
-    "title": "Vendor Invoice - Infosys Q2",
-    "status": "pending",
-    "current_stage": 1,
-    "workflow_id": 1,
-    "submitted_at": "2026-06-11T08:00:00",
-    "document_name": "Invoice_Q2_Infosys.pdf",
-    "amount": 250000.00,
-    "department": "Finance"
-  }
-}
+Payloads are HMAC-SHA256 signed when a `WebhookConfig.secret` is set:
 ```
-
-When a `WebhookConfig.secret` is set, the payload is signed and delivered with:
-```
-X-Signature-256: sha256=<hmac-sha256-hex>
+X-Workflow-Signature: sha256=<hmac-hex>
 X-Workflow-Event: stage.approved
 ```
 
@@ -1143,29 +822,23 @@ X-Workflow-Event: stage.approved
 
 ## Background Jobs (Scheduler)
 
-The scheduler starts automatically with the FastAPI app (via `lifespan`) and stops cleanly on shutdown.
+Starts automatically with the FastAPI app (via `lifespan`) and stops cleanly on shutdown.
 
-### Escalation job — runs every `ESCALATION_CHECK_INTERVAL` minutes (default 15)
+### Escalation job — every `ESCALATION_CHECK_INTERVAL` minutes (default 15)
 
-1. Queries `RequestStage` rows where `status = pending`, `sla_deadline <= now`, `is_sla_breached = false`, and `started_at IS NOT NULL`.
-2. Marks each as `is_sla_breached = true`.
-3. Sets the parent `WorkflowRequest.status = escalated`.
-4. Writes an `ActivityLog` entry with action `escalated`.
-5. Sends an admin alert email listing the breached request.
+1. Finds `RequestStage` rows where `status = pending`, `sla_deadline <= now`, `is_sla_breached = false`.
+2. Marks `is_sla_breached = true`, sets parent request to `escalated`.
+3. Writes `ActivityLog: escalated`.
+4. Sends an admin alert email.
 
-### Reminder job — runs every hour
+### Reminder job — every hour
 
-1. Queries `RequestStage` rows where `sla_deadline` is between now and now + 4 hours, not yet breached, and `started_at IS NOT NULL`.
-2. For each stage, resolves the approver group members.
-3. Sends a reminder email to each member with a link to the request.
-
-To change the escalation interval, update `ESCALATION_CHECK_INTERVAL` in `.env` and restart.
+1. Finds stages with `sla_deadline` between now and now + 4 hours, not yet breached.
+2. Sends a reminder email to each group member.
 
 ---
 
 ## Error Responses
-
-All errors follow a standard shape:
 
 ```json
 { "detail": "Human-readable error message" }
@@ -1196,19 +869,23 @@ All errors follow a standard shape:
 
 ---
 
-## Roadmap
+## Changelog
 
-### High priority
-- [ ] Wire `notify_approvers()` into `routers/approvals.py` after stage start
-- [ ] Wire `notify_submitter_completed()` after final approval/rejection
-- [ ] Approver group management UI (currently API-only)
-- [ ] Delegation UI — OOO toggle + delegate selector on user profile page
-- [ ] Conditional branching UI — stage-level condition editor
+### June 2026
 
-### Nice to have
-- [ ] Alembic migration files for schema versioning
-- [ ] S3 / MinIO document storage (replace local `uploads/`)
-- [ ] Bulk approve from approval queue
-- [ ] Slack interactive button endpoint (`POST /api/webhooks/slack/actions`)
-- [ ] Role-based nav hiding on the frontend
-- [ ] Request detail drawer with full audit trail
+**Email action flow — per-member tokens**
+- `create_approval_token()` now accepts an `approver_id` parameter and embeds it in the JWT payload.
+- `_fire_stage_notification()` generates one personal token pair per group member and sends individual emails, rather than one shared link for the whole group.
+- `one_click_action()` reads `approver_id` from the token and resolves the acting member precisely, so `voting_rule = all` stages correctly accumulate one approval per person.
+
+**Stage-type-aware email buttons**
+- `notify_approvers()` now accepts a `stage_type` parameter.
+- Button labels and email subject line adapt per stage type: Approve/Reject for `approval`, Mark Reviewed/Request Changes for `review`, Acknowledge/Decline for `acknowledgement`, Sign/Refuse for `signature`.
+- `_fire_stage_notification()` passes `stage_def.type.value` through to the notification service.
+
+**First-stage notification on submit**
+- `submit_request()` now calls `_fire_stage_notification()` after `db.commit()` for stage 1. Previously, approvers were only emailed when a stage _advanced_ (stage 2+), so the first stage never triggered emails.
+
+**Async email in sync handlers**
+- Replaced `asyncio.create_task()` calls (which fail in sync route handlers running in a thread pool) with `_run_async()` — a helper that fires a daemon thread and calls `asyncio.run(coro)` inside it.
+

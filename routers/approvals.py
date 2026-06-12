@@ -3,8 +3,19 @@ from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
 from database import get_db
 from schemas import ApprovalActionCreate, ApprovalActionOut
-from auth_utils import get_current_user
+from auth_utils import get_current_user, create_approval_token
+from services.notification import notification_service
+import asyncio
+import threading
 import models
+
+
+def _run_async(coro):
+    """Fire a coroutine from a sync context without conflicting with uvicorn's loop."""
+    def _target():
+        asyncio.run(coro)
+    t = threading.Thread(target=_target, daemon=True)
+    t.start()
 
 router = APIRouter()
 
@@ -29,9 +40,67 @@ def _advance_request(db: Session, req: models.WorkflowRequest):
         stage_def = db.query(models.WorkflowStage).filter(models.WorkflowStage.id == next_stage.stage_id).first()
         if stage_def:
             next_stage.sla_deadline = now + timedelta(hours=stage_def.sla_hours)
+        # Notify approvers for the new stage
+        _fire_stage_notification(db, req, next_stage, stage_def)
     else:
         req.status = models.RequestStatus.approved
         req.resolved_at = now
+        # Notify submitter of final approval
+        _fire_completion_notification(db, req)
+
+
+def _fire_stage_notification(db, req, request_stage, stage_def):
+    """Send email/Slack to all approvers for a newly started stage."""
+    if not stage_def:
+        return
+    workflow = db.query(models.Workflow).filter(models.Workflow.id == req.workflow_id).first()
+    if not workflow:
+        return
+    channel = workflow.notification_channel
+    members = (
+        db.query(models.ApproverGroupMember)
+        .filter(models.ApproverGroupMember.group_id == stage_def.approver_group_id)
+        .all()
+    )
+    approver_emails = []
+    for m in members:
+        user = db.query(models.User).filter(models.User.id == m.user_id).first()
+        if user and user.email:
+            approver_emails.append((user.email, m.user_id))
+    if not approver_emails:
+        return
+    if channel in (models.NotificationChannel.email, models.NotificationChannel.both):
+        for email, user_id in approver_emails:
+            approve_token = create_approval_token(req.id, request_stage.stage_order, "approved", user_id)
+            reject_token = create_approval_token(req.id, request_stage.stage_order, "rejected", user_id)
+            _run_async(
+                notification_service.notify_approvers(
+                    approver_emails=[email],
+                    request=req,
+                    stage_name=stage_def.name,
+                    workflow_name=workflow.name,
+                    approve_token=approve_token,
+                    reject_token=reject_token,
+                    stage_type=stage_def.type.value if stage_def.type else "approval",
+                )
+            )
+
+
+def _fire_completion_notification(db, req):
+    """Notify submitter when request is fully approved or rejected."""
+    workflow = db.query(models.Workflow).filter(models.Workflow.id == req.workflow_id).first()
+    submitter = db.query(models.User).filter(models.User.id == req.submitter_id).first()
+    if not submitter or not submitter.email or not workflow:
+        return
+    channel = workflow.notification_channel if workflow else models.NotificationChannel.email
+    if channel in (models.NotificationChannel.email, models.NotificationChannel.both):
+        _run_async(
+            notification_service.notify_submitter_completed(
+                submitter_email=submitter.email,
+                request=req,
+                workflow_name=workflow.name,
+            )
+        )
 
 
 def _check_stage_completion(db: Session, request_stage: models.RequestStage, req: models.WorkflowRequest):

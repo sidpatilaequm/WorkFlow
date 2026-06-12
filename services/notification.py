@@ -70,6 +70,14 @@ class NotificationService:
             logger.error("Email send failed: %s", exc)
             return False
 
+    # Maps stage type → (positive button label, negative button label, subject verb)
+    STAGE_TYPE_LABELS = {
+        "approval":        ("✓ Approve",        "✗ Reject",          "Approval"),
+        "review":          ("✓ Mark Reviewed",  "✗ Request Changes", "Review"),
+        "acknowledgement": ("✓ Acknowledge",    "✗ Decline",         "Acknowledgement"),
+        "signature":       ("✓ Sign",           "✗ Refuse",          "Signature"),
+    }
+
     async def notify_approvers(
         self,
         approver_emails: list[str],
@@ -78,35 +86,42 @@ class NotificationService:
         workflow_name: str,
         approve_token: str,
         reject_token: str,
+        stage_type: str = "approval",
     ) -> None:
         approve_url = f"{FRONTEND_URL}/action/{approve_token}"
         reject_url = f"{FRONTEND_URL}/action/{reject_token}"
 
+        positive_label, negative_label, subject_verb = self.STAGE_TYPE_LABELS.get(
+            stage_type, self.STAGE_TYPE_LABELS["approval"]
+        )
+
         for email in approver_emails:
             html = f"""
             <div style="font-family:sans-serif;max-width:600px;margin:0 auto">
-              <h2>Action required: {workflow_name}</h2>
+              <h2>{subject_verb} required: {workflow_name}</h2>
               <p>A document is awaiting your {stage_name.lower()}:</p>
               <table style="border-collapse:collapse;width:100%">
                 <tr><td style="padding:8px;border:1px solid #eee;font-weight:bold">Document</td>
                     <td style="padding:8px;border:1px solid #eee">{request.document_name or request.title}</td></tr>
                 <tr><td style="padding:8px;border:1px solid #eee;font-weight:bold">Stage</td>
                     <td style="padding:8px;border:1px solid #eee">{stage_name}</td></tr>
+                <tr><td style="padding:8px;border:1px solid #eee;font-weight:bold">Type</td>
+                    <td style="padding:8px;border:1px solid #eee;text-transform:capitalize">{stage_type}</td></tr>
                 {"" if not request.amount else f'<tr><td style="padding:8px;border:1px solid #eee;font-weight:bold">Amount</td><td style="padding:8px;border:1px solid #eee">&#8377;{request.amount:,.2f}</td></tr>'}
               </table>
               <div style="margin:24px 0">
-                <a href="{approve_url}" style="background:#1D9E75;color:white;padding:12px 24px;text-decoration:none;border-radius:6px">&#10003; Approve</a>
+                <a href="{approve_url}" style="background:#1D9E75;color:white;padding:12px 24px;text-decoration:none;border-radius:6px">{positive_label}</a>
                 &nbsp;&nbsp;
-                <a href="{reject_url}" style="background:#E24B4A;color:white;padding:12px 24px;text-decoration:none;border-radius:6px">&#10007; Reject</a>
+                <a href="{reject_url}" style="background:#E24B4A;color:white;padding:12px 24px;text-decoration:none;border-radius:6px">{negative_label}</a>
               </div>
               <p style="color:#888;font-size:12px">Or review in full: <a href="{FRONTEND_URL}/requests/{request.id}">{FRONTEND_URL}/requests/{request.id}</a></p>
             </div>
             """
             await self.send_email(
                 to=[email],
-                subject=f"[Action Required] {request.document_name or request.title} — {stage_name}",
+                subject=f"[{subject_verb} Required] {request.document_name or request.title} — {stage_name}",
                 html_body=html,
-                text_body=f"Approve: {approve_url}\nReject: {reject_url}",
+                text_body=f"{positive_label}: {approve_url}\n{negative_label}: {reject_url}",
             )
 
     async def notify_submitter_completed(
