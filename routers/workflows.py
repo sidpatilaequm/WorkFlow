@@ -13,6 +13,12 @@ def _get_user_or_404(user_id: int, db: Session) -> models.User:
         raise HTTPException(404, "User not found")
     return user
 
+def _require_admin(user_id: int, db: Session) -> models.User:
+    user = _get_user_or_404(user_id, db)
+    if user.role != models.UserRole.admin:
+        raise HTTPException(403, "Admin role required")
+    return user
+
 @router.get("/", response_model=List[WorkflowOut])
 def list_workflows(user_id: int = Query(...), db: Session = Depends(get_db)):
     _get_user_or_404(user_id, db)
@@ -32,9 +38,7 @@ def create_workflow(
     user_id: int = Query(...),
     db: Session = Depends(get_db),
 ):
-    current_user = _get_user_or_404(user_id, db)
-    if current_user.role != models.UserRole.admin:
-        raise HTTPException(403, "Admin role required")
+    current_user = _require_admin(user_id, db)
     wf = models.Workflow(
         name=payload.name,
         description=payload.description,
@@ -45,6 +49,9 @@ def create_workflow(
         notification_channel=payload.notification_channel,
         auto_approve_hours=payload.auto_approve_hours,
         amount_threshold=payload.amount_threshold,
+        auto_approve_conditions=payload.auto_approve_conditions,
+        reminder_after_hours=payload.reminder_after_hours,
+        reminder_interval_hours=payload.reminder_interval_hours,
         created_by_id=current_user.id,
     )
     db.add(wf)
@@ -59,6 +66,8 @@ def create_workflow(
             approver_group_id=s.approver_group_id,
             sla_hours=s.sla_hours,
             voting_rule=s.voting_rule,
+            is_optional=s.is_optional,
+            instructions=s.instructions,
             condition_field=s.condition_field,
             condition_op=s.condition_op,
             condition_value=s.condition_value,
@@ -76,9 +85,7 @@ def update_workflow(
     user_id: int = Query(...),
     db: Session = Depends(get_db),
 ):
-    current_user = _get_user_or_404(user_id, db)
-    if current_user.role != models.UserRole.admin:
-        raise HTTPException(403, "Admin role required")
+    _require_admin(user_id, db)
     wf = db.query(models.Workflow).filter(models.Workflow.id == wf_id).first()
     if not wf:
         raise HTTPException(404, "Workflow not found")
@@ -99,6 +106,8 @@ def update_workflow(
                 approver_group_id=s["approver_group_id"],
                 sla_hours=s.get("sla_hours", 48),
                 voting_rule=s.get("voting_rule", models.VotingRule.any),
+                is_optional=s.get("is_optional", False),
+                instructions=s.get("instructions"),
                 condition_field=s.get("condition_field"),
                 condition_op=s.get("condition_op"),
                 condition_value=s.get("condition_value"),
@@ -109,9 +118,7 @@ def update_workflow(
 
 @router.delete("/{wf_id}")
 def delete_workflow(wf_id: int, user_id: int = Query(...), db: Session = Depends(get_db)):
-    current_user = _get_user_or_404(user_id, db)
-    if current_user.role != models.UserRole.admin:
-        raise HTTPException(403, "Admin role required")
+    _require_admin(user_id, db)
     wf = db.query(models.Workflow).filter(models.Workflow.id == wf_id).first()
     if not wf:
         raise HTTPException(404, "Workflow not found")

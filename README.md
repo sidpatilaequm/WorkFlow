@@ -37,10 +37,10 @@ Full-stack: **FastAPI + MySQL** backend · **React + Vite** frontend.
 | Module | What's built |
 |---|---|
 | **Auth** | Login only (no register). Identity passed via `?user_id=` query param on all routes |
-| **Workflows** | CRUD, 4 stage types (approval / review / acknowledgement / signature), folder triggers, amount-based auto-approve |
-| **Stages** | Per-stage SLA deadlines, voting rules (any / all / sequential), per-stage conditional branching |
-| **Requests** | Submit with document upload, cancel, track with live stage progress, one-click email approval |
-| **Approvals** | Approve / reject / delegate, rejection behaviors (stop / restart / escalate), duplicate prevention |
+| **Workflows** | CRUD, 4 stage types (approval / review / acknowledgement / signature), folder triggers, amount-based auto-approve + complex JSON conditions |
+| **Stages** | Per-stage SLA deadlines, voting rules (any / all / sequential), per-stage conditional branching, optional stages, per-stage instructions |
+| **Requests** | Submit with document upload, cancel, track with live stage progress, one-click email approval, support for document type, folder path, and metadata |
+| **Approvals** | Approve / reject / delegate, rejection behaviors (stop / restart / escalate), duplicate prevention, OOO delegation chain (up to 3 hops) |
 | **Analytics** | Approval rate, avg resolution time, SLA breach count, by-workflow breakdown, approver performance, activity feed |
 | **Notifications** | Async SMTP email with stage-type-aware action buttons, Slack Block Kit DMs |
 | **Webhooks** | HMAC-signed outgoing payloads, Slack interactive button handler |
@@ -92,24 +92,24 @@ multimedia_governance.approver_groups
   id, name, description, created_at
 
 multimedia_governance.approver_group_members
-  id, group_id → approver_groups.id, user_id → user_details.userId
+  id, group_id → approver_groups.id, user_id → user_details.userId, sequential_order
 
 multimedia_governance.workflows
   id, name, description, type(approval|review|acknowledgement|signature),
   folder_trigger, is_active, escalation_hours, rejection_behavior(stop|restart|escalate),
-  notification_channel(email|slack|both), auto_approve_hours, amount_threshold,
+  notification_channel(email|slack|both), auto_approve_hours, amount_threshold, auto_approve_conditions (JSON),
   created_by_id → user_details.userId, created_at, updated_at
 
 multimedia_governance.workflow_stages
   id, workflow_id → workflows.id, name, type(approval|review|acknowledgement|signature),
   order, approver_group_id → approver_groups.id, sla_hours,
-  voting_rule(any|all|sequential), condition_field, condition_op, condition_value
+  voting_rule(any|all|sequential), is_optional, instructions, condition_field, condition_op, condition_value
 
 multimedia_governance.workflow_requests
-  id, title, description, document_name, document_url, amount, department,
-  request_type, workflow_id → workflows.id, submitter_id → user_details.userId,
-  status(pending|approved|rejected|escalated|cancelled), current_stage,
-  submitted_at, resolved_at, sla_deadline
+  id, title, description, document_name, document_url, document_type, folder_path,
+  amount, department, request_type, metadata (JSON), workflow_id → workflows.id, 
+  submitter_id → user_details.userId, status(pending|approved|rejected|escalated|cancelled), 
+  current_stage, submitted_at, resolved_at, sla_deadline
 
 multimedia_governance.request_stages
   id, request_id → workflow_requests.id, stage_id → workflow_stages.id,
@@ -121,7 +121,7 @@ multimedia_governance.approval_actions
 
 multimedia_governance.activity_log
   id, request_id → workflow_requests.id, user_id → user_details.userId (nullable = system),
-  action, detail, created_at
+  action, detail, stage_order, extra (JSON), created_at
 
 multimedia_governance.webhook_configs
   id, workflow_id → workflows.id (nullable = global), event, url, secret, is_active, created_at
@@ -845,9 +845,10 @@ CREATE TABLE IF NOT EXISTS multimedia_governance.approver_groups (
 -- approver_group_members
 -- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS multimedia_governance.approver_group_members (
-    id       INT AUTO_INCREMENT PRIMARY KEY,
-    group_id INT NOT NULL,
-    user_id  BIGINT NOT NULL,
+    id               INT AUTO_INCREMENT PRIMARY KEY,
+    group_id         INT NOT NULL,
+    user_id          BIGINT NOT NULL,
+    sequential_order INT NOT NULL DEFAULT 0,
     CONSTRAINT fk_agm_group FOREIGN KEY (group_id)
         REFERENCES multimedia_governance.approver_groups (id) ON DELETE CASCADE,
     CONSTRAINT fk_agm_user  FOREIGN KEY (user_id)
@@ -859,20 +860,21 @@ CREATE TABLE IF NOT EXISTS multimedia_governance.approver_group_members (
 -- workflows
 -- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS multimedia_governance.workflows (
-    id                   INT AUTO_INCREMENT PRIMARY KEY,
-    name                 VARCHAR(200) NOT NULL,
-    description          TEXT,
-    type                 ENUM('approval','review','acknowledgement','signature') NOT NULL,
-    folder_trigger       VARCHAR(300),
-    is_active            TINYINT(1) NOT NULL DEFAULT 1,
-    escalation_hours     INT NOT NULL DEFAULT 24,
-    rejection_behavior   ENUM('stop','restart','escalate') NOT NULL DEFAULT 'stop',
-    notification_channel ENUM('email','slack','both') NOT NULL DEFAULT 'email',
-    auto_approve_hours   INT,
-    amount_threshold     DOUBLE,
-    created_by_id        BIGINT,
-    created_at           DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
-    updated_at           DATETIME(6) ON UPDATE CURRENT_TIMESTAMP(6),
+    id                      INT AUTO_INCREMENT PRIMARY KEY,
+    name                    VARCHAR(200) NOT NULL,
+    description             TEXT,
+    type                    ENUM('approval','review','acknowledgement','signature') NOT NULL,
+    folder_trigger          VARCHAR(300),
+    is_active               TINYINT(1) NOT NULL DEFAULT 1,
+    escalation_hours        INT NOT NULL DEFAULT 24,
+    rejection_behavior      ENUM('stop','restart','escalate') NOT NULL DEFAULT 'stop',
+    notification_channel    ENUM('email','slack','both') NOT NULL DEFAULT 'email',
+    auto_approve_hours      INT,
+    amount_threshold        DOUBLE,
+    auto_approve_conditions JSON,
+    created_by_id           BIGINT,
+    created_at              DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at              DATETIME(6) ON UPDATE CURRENT_TIMESTAMP(6),
     CONSTRAINT fk_wf_created_by FOREIGN KEY (created_by_id)
         REFERENCES multimedia_governance.user_details (userId)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -889,6 +891,8 @@ CREATE TABLE IF NOT EXISTS multimedia_governance.workflow_stages (
     approver_group_id INT,
     sla_hours         INT NOT NULL DEFAULT 48,
     voting_rule       ENUM('any','all','sequential') NOT NULL DEFAULT 'any',
+    is_optional       TINYINT(1) NOT NULL DEFAULT 0,
+    instructions      TEXT,
     condition_field   VARCHAR(100),
     condition_op      VARCHAR(20),
     condition_value   VARCHAR(300),
@@ -907,9 +911,12 @@ CREATE TABLE IF NOT EXISTS multimedia_governance.workflow_requests (
     description   TEXT,
     document_name VARCHAR(300),
     document_url  VARCHAR(500),
+    document_type VARCHAR(100),
+    folder_path   VARCHAR(300),
     amount        DOUBLE,
     department    VARCHAR(100),
     request_type  VARCHAR(100),
+    request_metadata      JSON,
     workflow_id   INT,
     submitter_id  BIGINT,
     status        ENUM('pending','approved','rejected','escalated','cancelled')
@@ -967,12 +974,14 @@ CREATE TABLE IF NOT EXISTS multimedia_governance.approval_actions (
 -- activity_log
 -- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS multimedia_governance.activity_log (
-    id         INT AUTO_INCREMENT PRIMARY KEY,
-    request_id INT,
-    user_id    BIGINT,
-    action     VARCHAR(100) NOT NULL,
-    detail     TEXT,
-    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    id          INT AUTO_INCREMENT PRIMARY KEY,
+    request_id  INT,
+    user_id     BIGINT,
+    action      VARCHAR(100) NOT NULL,
+    detail      TEXT,
+    stage_order INT,
+    extra       JSON,
+    created_at  DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     CONSTRAINT fk_al_request FOREIGN KEY (request_id)
         REFERENCES multimedia_governance.workflow_requests (id) ON DELETE CASCADE,
     CONSTRAINT fk_al_user    FOREIGN KEY (user_id)

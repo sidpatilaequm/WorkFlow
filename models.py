@@ -1,6 +1,6 @@
 from sqlalchemy import (
     Column, Integer, String, Text, DateTime, Boolean,
-    Float, ForeignKey, Enum as SAEnum
+    Float, ForeignKey, Enum as SAEnum, JSON
 )
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -71,8 +71,6 @@ class User(Base):
     created_at       = Column("created_date", DateTime(timezone=True), server_default=func.now())
     updated_at       = Column("modified_date", DateTime(timezone=True), onupdate=func.now())
 
-    # Fields from previous model that might not be in client DB but needed for workflow
-    # Keeping them but they might need migration if client DB doesn't have them
     is_active        = Column(Boolean, default=True)
     ooo_until        = Column(DateTime, nullable=True)
     delegate_id      = Column(Integer, ForeignKey("user_details.userId"), nullable=True)
@@ -104,9 +102,10 @@ class ApproverGroup(Base):
 class ApproverGroupMember(Base):
     __tablename__ = "approver_group_members"
 
-    id       = Column(Integer, primary_key=True, index=True)
-    group_id = Column(Integer, ForeignKey("approver_groups.id", ondelete="CASCADE"))
-    user_id  = Column(Integer, ForeignKey("user_details.userId", ondelete="CASCADE"))
+    id               = Column(Integer, primary_key=True, index=True)
+    group_id         = Column(Integer, ForeignKey("approver_groups.id", ondelete="CASCADE"))
+    user_id          = Column(Integer, ForeignKey("user_details.userId", ondelete="CASCADE"))
+    sequential_order = Column(Integer, default=0)
 
     group    = relationship("ApproverGroup", back_populates="members")
     user     = relationship("User")
@@ -122,11 +121,20 @@ class Workflow(Base):
     folder_trigger       = Column(String(300))
     is_active            = Column(Boolean, default=True)
 
-    escalation_hours     = Column(Integer, default=24)
-    rejection_behavior   = Column(SAEnum(RejectionBehavior), default=RejectionBehavior.stop)
-    notification_channel = Column(SAEnum(NotificationChannel), default=NotificationChannel.email)
-    auto_approve_hours   = Column(Integer, nullable=True)
-    amount_threshold     = Column(Float, nullable=True)
+    escalation_hours        = Column(Integer, default=24)
+    rejection_behavior      = Column(SAEnum(RejectionBehavior), default=RejectionBehavior.stop)
+    notification_channel    = Column(SAEnum(NotificationChannel), default=NotificationChannel.email)
+    auto_approve_hours      = Column(Integer, nullable=True)
+    amount_threshold        = Column(Float, nullable=True)
+    auto_approve_conditions = Column(JSON, nullable=True)
+
+    # ── Reminder settings ────────────────────────────────────────────────────
+    # Hours after a stage starts before the first reminder is sent.
+    # e.g. 8 → first reminder fires 8 hours after stage start.
+    reminder_after_hours    = Column(Integer, nullable=True)
+    # How often (hours) to repeat the reminder until the stage is resolved.
+    # e.g. 4 → re-send every 4 hours after the first reminder.
+    reminder_interval_hours = Column(Integer, nullable=True)
 
     created_by_id        = Column(Integer, ForeignKey("user_details.userId"))
     created_at           = Column(DateTime(timezone=True), server_default=func.now())
@@ -152,6 +160,8 @@ class WorkflowStage(Base):
     approver_group_id = Column(Integer, ForeignKey("approver_groups.id"))
     sla_hours         = Column(Integer, default=48)
     voting_rule       = Column(SAEnum(VotingRule), default=VotingRule.any)
+    is_optional       = Column(Boolean, default=False)
+    instructions      = Column(Text, nullable=True)
 
     condition_field   = Column(String(100))
     condition_op      = Column(String(20))
@@ -170,9 +180,12 @@ class WorkflowRequest(Base):
     description   = Column(Text)
     document_name = Column(String(300))
     document_url  = Column(String(500))
+    document_type = Column(String(100))
+    folder_path   = Column(String(300))
     amount        = Column(Float, nullable=True)
     department    = Column(String(100))
     request_type  = Column(String(100))
+    request_metadata = Column(JSON, nullable=True)
 
     workflow_id   = Column(Integer, ForeignKey("workflows.id"))
     submitter_id  = Column(Integer, ForeignKey("user_details.userId"))
@@ -204,7 +217,6 @@ class WorkflowRequest(Base):
     def pending_group_name(self):
         if self.status != RequestStatus.pending:
             return None
-        # Find stage definition for current stage
         if not self.workflow:
             return "Unknown Group"
         for s in self.workflow.stages:
@@ -238,6 +250,10 @@ class RequestStage(Base):
     completed_at    = Column(DateTime(timezone=True), nullable=True)
     sla_deadline    = Column(DateTime(timezone=True), nullable=True)
     is_sla_breached = Column(Boolean, default=False)
+
+    # Tracks when the last reminder was sent for this stage instance.
+    # Used by the scheduler to enforce reminder_after_hours + reminder_interval_hours.
+    last_reminded_at = Column(DateTime(timezone=True), nullable=True)
 
     request         = relationship("WorkflowRequest", back_populates="stages")
     stage           = relationship("WorkflowStage", back_populates="request_stages")
@@ -286,6 +302,8 @@ class ActivityLog(Base):
     user_id     = Column(Integer, ForeignKey("user_details.userId"), nullable=True)
     action      = Column(String(100), nullable=False)
     detail      = Column(Text)
+    stage_order = Column(Integer, nullable=True)
+    extra       = Column(JSON, nullable=True)
     created_at  = Column(DateTime(timezone=True), server_default=func.now())
 
     request     = relationship("WorkflowRequest", back_populates="activity_log")

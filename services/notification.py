@@ -87,6 +87,7 @@ class NotificationService:
         approve_token: str,
         reject_token: str,
         stage_type: str = "approval",
+        instructions: str = None,
     ) -> None:
         approve_url = f"{FRONTEND_URL}/action/{approve_token}"
         reject_url = f"{FRONTEND_URL}/action/{reject_token}"
@@ -94,6 +95,15 @@ class NotificationService:
         positive_label, negative_label, subject_verb = self.STAGE_TYPE_LABELS.get(
             stage_type, self.STAGE_TYPE_LABELS["approval"]
         )
+
+        instructions_section = ""
+        if instructions:
+            instructions_section = f"""
+            <div style="margin:16px 0;padding:12px;background:#f9f9f9;border-left:4px solid #4F7DFF">
+              <p style="margin:0;font-weight:bold;font-size:13px">Instructions:</p>
+              <p style="margin:4px 0 0;font-size:14px;color:#444">{instructions}</p>
+            </div>
+            """
 
         for email in approver_emails:
             # Isolate each recipient — a failure for one must never abort the rest
@@ -116,6 +126,7 @@ class NotificationService:
                         <td style="padding:8px;border:1px solid #eee;text-transform:capitalize">{stage_type}</td></tr>
                     {amount_row}
                   </table>
+                  {instructions_section}
                   <div style="margin:24px 0">
                     <a href="{approve_url}" style="background:#1D9E75;color:white;padding:12px 24px;text-decoration:none;border-radius:6px">{positive_label}</a>
                     &nbsp;&nbsp;
@@ -138,7 +149,7 @@ class NotificationService:
         submitter_email: str,
         request,
         workflow_name: str,
-        approver_comments: list = None,
+        comments: list = None,
     ) -> None:
         from models import RequestStatus
         status_word = "approved" if request.status in (
@@ -148,21 +159,23 @@ class NotificationService:
 
         # Build comments section
         comments_html = ""
-        if approver_comments:
+        if comments:
             rows = "".join(
-                f'<tr><td style="padding:8px;border:1px solid #eee;font-weight:bold">'
-                f'{c["approver_name"]}</td>'
-                f'<td style="padding:8px;border:1px solid #eee">'
-                f'{c["comment"] or "<em style=\'color:#aaa\'>No comment</em>"}</td></tr>'
-                for c in approver_comments
+                f'<tr>'
+                f'<td style="padding:8px;border:1px solid #eee;font-size:12px">{c["stage"]}</td>'
+                f'<td style="padding:8px;border:1px solid #eee;font-size:12px"><strong>{c["actor"]}</strong></td>'
+                f'<td style="padding:8px;border:1px solid #eee;font-size:12px">{c["comment"]}</td>'
+                f'</tr>'
+                for c in comments
             )
             comments_html = f"""
-            <h3 style="margin-top:24px;font-size:14px">Approver Comments</h3>
+            <h3 style="margin-top:24px;font-size:14px">Decision Trail & Comments</h3>
             <table style="border-collapse:collapse;width:100%">
               <thead>
                 <tr>
-                  <th style="padding:8px;border:1px solid #eee;text-align:left;background:#f5f5f5">Approver</th>
-                  <th style="padding:8px;border:1px solid #eee;text-align:left;background:#f5f5f5">Comment</th>
+                  <th style="padding:8px;border:1px solid #eee;text-align:left;background:#f5f5f5;font-size:12px">Stage</th>
+                  <th style="padding:8px;border:1px solid #eee;text-align:left;background:#f5f5f5;font-size:12px">Actor</th>
+                  <th style="padding:8px;border:1px solid #eee;text-align:left;background:#f5f5f5;font-size:12px">Comment</th>
                 </tr>
               </thead>
               <tbody>{rows}</tbody>

@@ -75,6 +75,36 @@ def decode_approval_token(token: str) -> dict:
         raise cred_exc
 
 
+def resolve_approver(user: models.User, db: Session, depth: int = 0) -> models.User:
+    """
+    Resolve the actual approver by following the OOO delegation chain.
+    Max 3 hops.
+    """
+    if depth >= 3:
+        return user
+    
+    now = datetime.now(timezone.utc)
+    # Check if user is OOO (ooo_until is naive or aware, models.py uses DateTime)
+    # Most likely naive UTC in DB
+    is_ooo = False
+    if user.ooo_until:
+        # If ooo_until is in the future, they are OOO
+        # We need to be careful with timezone-aware vs naive
+        ooo_limit = user.ooo_until
+        if ooo_limit.tzinfo is None:
+            now_naive = datetime.utcnow()
+            is_ooo = ooo_limit > now_naive
+        else:
+            is_ooo = ooo_limit > now
+            
+    if is_ooo and user.delegate_id:
+        delegate = db.query(models.User).filter(models.User.id == user.delegate_id).first()
+        if delegate:
+            return resolve_approver(delegate, db, depth + 1)
+    
+    return user
+
+
 def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> models.User:
     cred_exc = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,

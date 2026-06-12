@@ -28,6 +28,7 @@ def _get_user_or_404(user_id: int, db: Session) -> models.User:
 
 class MemberAdd(BaseModel):
     user_id: int
+    sequential_order: int = 0
 
 class ApproverGroupDetailOut(ApproverGroupOut):
     members: list = []
@@ -40,9 +41,17 @@ def list_groups(user_id: int = Query(...), db: Session = Depends(get_db)):
     groups = db.query(models.ApproverGroup).all()
     result = []
     for g in groups:
+        # Sort members by sequential_order
+        sorted_members = sorted(g.members, key=lambda m: m.sequential_order)
         members = [
-            {"id": m.user.id, "name": m.user.name, "email": m.user.email, "role": m.user.role}
-            for m in g.members if m.user
+            {
+                "id": m.user.id, 
+                "name": m.user.name, 
+                "email": m.user.email, 
+                "role": m.user.role,
+                "sequential_order": m.sequential_order
+            }
+            for m in sorted_members if m.user
         ]
         result.append({"id": g.id, "name": g.name, "description": g.description, "members": members})
     return result
@@ -57,15 +66,22 @@ def create_group(
     group = models.ApproverGroup(name=payload.name, description=payload.description)
     db.add(group)
     db.flush()
-    for uid in payload.member_ids:
+    for idx, uid in enumerate(payload.member_ids):
         user = db.query(models.User).filter(models.User.id == uid).first()
         if user:
-            db.add(models.ApproverGroupMember(group_id=group.id, user_id=uid))
+            db.add(models.ApproverGroupMember(group_id=group.id, user_id=uid, sequential_order=idx))
     db.commit()
     db.refresh(group)
+    sorted_members = sorted(group.members, key=lambda m: m.sequential_order)
     members = [
-        {"id": m.user.id, "name": m.user.name, "email": m.user.email, "role": m.user.role}
-        for m in group.members if m.user
+        {
+            "id": m.user.id, 
+            "name": m.user.name, 
+            "email": m.user.email, 
+            "role": m.user.role,
+            "sequential_order": m.sequential_order
+        }
+        for m in sorted_members if m.user
     ]
     return {"id": group.id, "name": group.name, "description": group.description, "members": members}
 
@@ -102,10 +118,15 @@ def add_member(
         models.ApproverGroupMember.user_id == payload.user_id
     ).first()
     if existing:
-        raise HTTPException(400, "User already in group")
-    db.add(models.ApproverGroupMember(group_id=group_id, user_id=payload.user_id))
+        existing.sequential_order = payload.sequential_order
+    else:
+        db.add(models.ApproverGroupMember(
+            group_id=group_id, 
+            user_id=payload.user_id, 
+            sequential_order=payload.sequential_order
+        ))
     db.commit()
-    return {"detail": "Member added"}
+    return {"detail": "Member added/updated"}
 
 @router.delete("/approver-groups/{group_id}/members/{user_id_path}")
 def remove_member(

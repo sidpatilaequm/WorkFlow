@@ -4,7 +4,7 @@ from sqlalchemy import func
 from typing import Optional
 from datetime import datetime, timedelta
 from database import get_db
-from schemas import AnalyticsSummary
+from schemas import AnalyticsSummary, NotificationReport, WorkflowNotificationRow
 import models
 
 router = APIRouter()
@@ -119,7 +119,6 @@ def approver_performance(
         .all()
     )
 
-    # Group by approver
     by_approver: dict[int, dict] = {}
     for action in actions:
         uid = action.approver_id
@@ -144,7 +143,6 @@ def approver_performance(
         elif action.decision == models.ApprovalDecision.delegated:
             entry["delegated"] += 1
 
-        # Use stage started_at as the "assigned_at" proxy
         rs = db.query(models.RequestStage).filter(
             models.RequestStage.id == action.request_stage_id
         ).first()
@@ -192,3 +190,141 @@ def activity_feed(
             "created_at": log.created_at.isoformat(),
         })
     return result
+
+
+@router.get("/notification-report", response_model=NotificationReport)
+def notification_report(
+    user_id: int = Query(...),
+    days: int = Query(30, ge=1, le=365),
+    workflow_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+):
+    """
+    Notification compliance report.
+
+    For every RequestStage that started within the period we classify it as:
+
+      bypassed  — the stage completed (approved/rejected) BEFORE the scheduler
+                  ever sent a reminder (no 'reminder_sent' ActivityLog entry
+                  exists for that stage).  These approvers acted on their own.
+
+      received_reminders — at least one 'reminder_sent' log exists for the stage.
+        └─ still_pending — the stage is still pending (never resolved after reminders).
+
+    Aggregated at the top level and broken down per workflow.
+    """
+    since = datetime.utcnow() - timedelta(days=days)
+
+    # ── Collect all RequestStages that started in the period ─────────────────
+    rs_query = (
+        db.query(models.RequestStage)
+        .join(models.WorkflowRequest,
+              models.RequestStage.request_id == models.WorkflowRequest.id)
+        .filter(
+            models.RequestStage.started_at >= since,
+            models.RequestStage.started_at.isnot(None),
+        )
+    )
+    if workflow_id:
+        rs_query = rs_query.filter(
+            models.WorkflowRequest.workflow_id == workflow_id
+        )
+
+    all_stages = rs_query.all()
+
+    # ── Build a set of request_stage_ids that received at least one reminder ─
+    reminded_stage_ids: set[int] = set()
+    reminder_logs = (
+        db.query(models.ActivityLog)
+        .filter(
+            models.ActivityLog.action == "reminder_sent",
+            models.ActivityLog.created_at >= since,
+        )
+        .all()
+    )
+    for log in reminder_logs:
+        if log.extra and isinstance(log.extra, dict):
+            rs_id = log.extra.get("request_stage_id")
+            if rs_id:
+                reminded_stage_ids.add(rs_id)
+
+    # ── Per-workflow accumulators ─────────────────────────────────────────────
+    # wf_id → { total, bypassed, received, still_pending, name }
+    wf_buckets: dict[int, dict] = {}
+
+    total_stages_run   = 0
+    total_bypassed     = 0
+    total_received     = 0
+    total_still_pending = 0
+
+    for rs in all_stages:
+        req = db.query(models.WorkflowRequest).filter(
+            models.WorkflowRequest.id == rs.request_id
+        ).first()
+        if not req:
+            continue
+
+        wf = db.query(models.Workflow).filter(
+            models.Workflow.id == req.workflow_id
+        ).first()
+        if not wf:
+            continue
+
+        wid = wf.id
+        if wid not in wf_buckets:
+            wf_buckets[wid] = {
+                "workflow_id": wid,
+                "workflow_name": wf.name,
+                "total": 0,
+                "bypassed": 0,
+                "received": 0,
+                "still_pending": 0,
+            }
+
+        b = wf_buckets[wid]
+        b["total"] += 1
+        total_stages_run += 1
+
+        stage_was_reminded = rs.id in reminded_stage_ids
+
+        if stage_was_reminded:
+            b["received"] += 1
+            total_received += 1
+            # Still pending = stage never completed after reminders were sent
+            if rs.status == models.RequestStatus.pending:
+                b["still_pending"] += 1
+                total_still_pending += 1
+        else:
+            # No reminder was ever sent → approvers acted before the window expired
+            b["bypassed"] += 1
+            total_bypassed += 1
+
+    # ── Build per-workflow rows ───────────────────────────────────────────────
+    by_workflow_rows = []
+    for b in sorted(wf_buckets.values(), key=lambda x: x["total"], reverse=True):
+        t = b["total"]
+        bypass_pct = round(b["bypassed"] / t * 100, 1) if t > 0 else 0.0
+        by_workflow_rows.append(WorkflowNotificationRow(
+            workflow_id=b["workflow_id"],
+            workflow_name=b["workflow_name"],
+            total_stages_run=t,
+            bypassed_notifications=b["bypassed"],
+            received_reminders=b["received"],
+            still_pending_after_reminder=b["still_pending"],
+            bypass_rate_pct=bypass_pct,
+        ))
+
+    overall_bypass_pct = (
+        round(total_bypassed / total_stages_run * 100, 1)
+        if total_stages_run > 0 else 0.0
+    )
+
+    return NotificationReport(
+        period_days=days,
+        total_stages_run=total_stages_run,
+        total_bypassed=total_bypassed,
+        total_received_reminders=total_received,
+        total_still_pending=total_still_pending,
+        overall_bypass_rate_pct=overall_bypass_pct,
+        by_workflow=by_workflow_rows,
+    )

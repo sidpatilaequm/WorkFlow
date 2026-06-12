@@ -1,5 +1,5 @@
 from pydantic import BaseModel, EmailStr
-from typing import Optional, List
+from typing import Optional, List, Any
 from datetime import datetime
 from models import (
     UserRole, WorkflowType, VotingRule, RequestStatus,
@@ -74,9 +74,11 @@ class StageCreate(BaseModel):
     name: str
     type: WorkflowType
     order: int
-    approver_group_id: int
+    approver_group_id: Optional[int] = None
     sla_hours: int = 48
     voting_rule: VotingRule = VotingRule.any
+    is_optional: bool = False
+    instructions: Optional[str] = None
     condition_field: Optional[str] = None
     condition_op: Optional[str] = None
     condition_value: Optional[str] = None
@@ -86,12 +88,15 @@ class StageOut(BaseModel):
     name: str
     type: WorkflowType
     order: int
-    approver_group_id: int
+    approver_group_id: Optional[int]
     sla_hours: int
     voting_rule: VotingRule
+    is_optional: bool
+    instructions: Optional[str]
     condition_field: Optional[str]
     condition_op: Optional[str]
     condition_value: Optional[str]
+
     class Config:
         from_attributes = True
 
@@ -108,6 +113,9 @@ class WorkflowCreate(BaseModel):
     notification_channel: NotificationChannel = NotificationChannel.email
     auto_approve_hours: Optional[int] = None
     amount_threshold: Optional[float] = None
+    auto_approve_conditions: Optional[Any] = None
+    reminder_after_hours: Optional[int] = None
+    reminder_interval_hours: Optional[int] = None
     stages: List[StageCreate] = []
 
 class WorkflowUpdate(BaseModel):
@@ -118,6 +126,10 @@ class WorkflowUpdate(BaseModel):
     rejection_behavior: Optional[RejectionBehavior] = None
     notification_channel: Optional[NotificationChannel] = None
     auto_approve_hours: Optional[int] = None
+    amount_threshold: Optional[float] = None
+    auto_approve_conditions: Optional[Any] = None
+    reminder_after_hours: Optional[int] = None
+    reminder_interval_hours: Optional[int] = None
     stages: Optional[List[StageCreate]] = None
 
 class WorkflowOut(BaseModel):
@@ -131,6 +143,10 @@ class WorkflowOut(BaseModel):
     rejection_behavior: RejectionBehavior
     notification_channel: NotificationChannel
     auto_approve_hours: Optional[int]
+    amount_threshold: Optional[float]
+    auto_approve_conditions: Optional[Any]
+    reminder_after_hours: Optional[int]
+    reminder_interval_hours: Optional[int]
     created_at: datetime
     stages: List[StageOut] = []
     class Config:
@@ -144,9 +160,12 @@ class RequestCreate(BaseModel):
     description: Optional[str] = None
     document_name: Optional[str] = None
     document_url: Optional[str] = None
+    document_type: Optional[str] = None
+    folder_path: Optional[str] = None
     amount: Optional[float] = None
     department: Optional[str] = None
     request_type: Optional[str] = None
+    request_metadata: Optional[Any] = None
     workflow_id: int
 
 class RequestStageOut(BaseModel):
@@ -171,8 +190,12 @@ class RequestOut(BaseModel):
     description: Optional[str] = None
     document_name: Optional[str] = None
     document_url: Optional[str] = None
+    document_type: Optional[str] = None
+    folder_path: Optional[str] = None
     amount: Optional[float] = None
     department: Optional[str] = None
+    request_type: Optional[str] = None
+    request_metadata: Optional[Any] = None
     workflow_id: Optional[int] = None
     workflow_name: Optional[str] = None
     submitter_id: Optional[int] = None
@@ -216,6 +239,8 @@ class ActivityLogOut(BaseModel):
     request_id: Optional[int] = None
     action: str
     detail: Optional[str]
+    stage_order: Optional[int] = None
+    extra: Optional[Any] = None
     created_at: datetime
     user: Optional[UserOut]
     class Config:
@@ -234,3 +259,30 @@ class AnalyticsSummary(BaseModel):
     avg_resolution_hours: float
     sla_breaches: int
     recent_activity: List[ActivityLogOut] = []
+
+
+class WorkflowNotificationRow(BaseModel):
+    """Per-workflow breakdown for the notification report."""
+    workflow_id: int
+    workflow_name: str
+    # Total request-stages that ran through this workflow in the period
+    total_stages_run: int
+    # Stages where all approvers acted before any reminder was sent
+    bypassed_notifications: int
+    # Stages that received at least one reminder
+    received_reminders: int
+    # Of those that received reminders: how many are still unresolved
+    still_pending_after_reminder: int
+    # Percentage of stages that bypassed (acted without needing a reminder)
+    bypass_rate_pct: float
+
+
+class NotificationReport(BaseModel):
+    """Top-level notification compliance report."""
+    period_days: int
+    total_stages_run: int
+    total_bypassed: int                 # resolved without any reminder
+    total_received_reminders: int       # got at least one reminder
+    total_still_pending: int            # got reminder and still unresolved
+    overall_bypass_rate_pct: float
+    by_workflow: List[WorkflowNotificationRow] = []

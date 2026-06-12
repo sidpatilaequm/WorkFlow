@@ -58,18 +58,47 @@ def submit_request(
         raise HTTPException(404, "Workflow not found or inactive")
 
     auto_approve = False
+    # 1. Simple amount threshold check
     if wf.amount_threshold is not None and payload.amount is not None:
         if payload.amount <= wf.amount_threshold:
             auto_approve = True
+
+    # 2. Complex auto-approve conditions (JSON)
+    if not auto_approve and wf.auto_approve_conditions:
+        try:
+            # Expected format: [{"field": "amount", "operator": "lt", "value": 1000}, ...]
+            conditions = wf.auto_approve_conditions
+            if isinstance(conditions, list):
+                all_met = True
+                for cond in conditions:
+                    f = cond.get("field")
+                    op = cond.get("operator")
+                    val = cond.get("value")
+                    actual = getattr(payload, f, None)
+
+                    if op == "lt": all_met = all_met and (actual < val)
+                    elif op == "lte": all_met = all_met and (actual <= val)
+                    elif op == "gt": all_met = all_met and (actual > val)
+                    elif op == "gte": all_met = all_met and (actual >= val)
+                    elif op == "eq": all_met = all_met and (actual == val)
+                    else: all_met = False
+                
+                if all_met:
+                    auto_approve = True
+        except Exception as e:
+            print(f"Error evaluating auto-approve conditions: {e}")
 
     req = models.WorkflowRequest(
         title=payload.title,
         description=payload.description,
         document_name=payload.document_name,
         document_url=payload.document_url,
+        document_type=payload.document_type,
+        folder_path=payload.folder_path,
         amount=payload.amount,
         department=payload.department,
         request_type=payload.request_type,
+        request_metadata=payload.request_metadata,
         workflow_id=wf.id,
         submitter_id=current_user.id,
         current_stage=0,
@@ -84,7 +113,7 @@ def submit_request(
             request_id=req.id,
             user_id=None,
             action="auto_approved",
-            detail=f"Auto-approved: amount {payload.amount} is within threshold {wf.amount_threshold}",
+            detail=f"Auto-approved based on workflow conditions",
         ))
         db.commit()
         db.refresh(req)
@@ -274,24 +303,40 @@ def one_click_action(
         models.WorkflowStage.id == active_stage.stage_id
     ).first()
 
-    if approver_id:
-        member = (
+    if not approver_id:
+        raise HTTPException(400, "Approver ID missing from token")
+
+    # Sequential check
+    if stage_def.voting_rule == models.VotingRule.sequential:
+        acted_user_ids = [
+            a.approver_id for a in
+            db.query(models.ApprovalAction)
+            .filter(models.ApprovalAction.request_stage_id == active_stage.id)
+            .all()
+        ]
+        next_member = (
             db.query(models.ApproverGroupMember)
             .filter(
                 models.ApproverGroupMember.group_id == stage_def.approver_group_id,
-                models.ApproverGroupMember.user_id == approver_id,
+                models.ApproverGroupMember.user_id.notin_(acted_user_ids)
             )
+            .order_by(models.ApproverGroupMember.sequential_order)
             .first()
-        ) if stage_def else None
-    else:
-        member = (
-            db.query(models.ApproverGroupMember)
-            .filter(models.ApproverGroupMember.group_id == stage_def.approver_group_id)
-            .first()
-        ) if stage_def else None
+        )
+        if not next_member or next_member.user_id != approver_id:
+            raise HTTPException(403, "It is not your turn to approve in this sequential stage")
+
+    member = (
+        db.query(models.ApproverGroupMember)
+        .filter(
+            models.ApproverGroupMember.group_id == stage_def.approver_group_id,
+            models.ApproverGroupMember.user_id == approver_id,
+        )
+        .first()
+    )
 
     if not member:
-        raise HTTPException(400, "No approver found for this stage")
+        raise HTTPException(400, "You are not an approver for this stage")
 
     decision = (
         models.ApprovalDecision.approved
@@ -324,6 +369,7 @@ def one_click_action(
         user_id=member.user_id,
         action=action_str,
         detail=f"Stage {stage_order} {action_str} via email link",
+        stage_order=stage_order
     ))
 
     from routers.approvals import _check_stage_completion
@@ -391,8 +437,6 @@ def take_action_by_user(
             req.current_stage = active_stage.stage_order
             db.flush()
             db.refresh(req)
-            if req.status != models.RequestStatus.pending:
-                raise HTTPException(400, f"Request is already {req.status.value}")
 
     if not active_stage:
         raise HTTPException(400, "No active stage found for this request")
@@ -400,6 +444,27 @@ def take_action_by_user(
     stage_def = db.query(models.WorkflowStage).filter(
         models.WorkflowStage.id == active_stage.stage_id
     ).first()
+
+    # Sequential check
+    if stage_def.voting_rule == models.VotingRule.sequential:
+        acted_user_ids = [
+            a.approver_id for a in
+            db.query(models.ApprovalAction)
+            .filter(models.ApprovalAction.request_stage_id == active_stage.id)
+            .all()
+        ]
+        next_member = (
+            db.query(models.ApproverGroupMember)
+            .filter(
+                models.ApproverGroupMember.group_id == stage_def.approver_group_id,
+                models.ApproverGroupMember.user_id.notin_(acted_user_ids)
+            )
+            .order_by(models.ApproverGroupMember.sequential_order)
+            .first()
+        )
+        if not next_member or next_member.user_id != current_user.id:
+            if current_user.role != models.UserRole.admin:
+                raise HTTPException(403, "It is not your turn to approve in this sequential stage")
 
     # Verify the user belongs to the approver group for this stage
     if current_user.role not in (models.UserRole.admin,):
@@ -446,6 +511,7 @@ def take_action_by_user(
         user_id=current_user.id,
         action=action,
         detail=f"Stage {req.current_stage} {action} by {current_user.name}. {comment or ''}",
+        stage_order=req.current_stage
     ))
 
     from routers.approvals import _check_stage_completion
