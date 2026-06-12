@@ -131,7 +131,7 @@ def remove_member(
 def list_users(user_id: int = Query(...), db: Session = Depends(get_db)):
     _require_admin(user_id, db)
     users = db.query(models.User).filter(models.User.is_active == True).all()
-    return [{"id": u.id, "name": u.name, "email": u.email, "role": u.role, "department": u.department} for u in users]
+    return [{"id": u.id, "name": u.name, "email": u.email, "role": u.role, "company_id": u.company_id} for u in users]
 
 # ─── Workflow Stages ──────────────────────────────────────────────────────────
 

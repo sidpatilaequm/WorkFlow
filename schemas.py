@@ -10,18 +10,26 @@ from models import (
 # ─── Auth ─────────────────────────────────────────────────────────────────────
 
 class UserCreate(BaseModel):
-    name: str
+    firstName: str
+    lastName: Optional[str] = None
     email: EmailStr
     password: str
     role: UserRole = UserRole.submitter
-    department: Optional[str] = None
+    phoneNumber: Optional[str] = None
+    designation: Optional[str] = None
+    company_id: Optional[int] = None
 
 class UserOut(BaseModel):
     id: int
-    name: str
+    firstName: str
+    lastName: Optional[str] = None
+    name: Optional[str] = None
     email: str
     role: UserRole
-    department: Optional[str]
+    phoneNumber: Optional[str] = None
+    designation: Optional[str] = None
+    onboardingStatus: Optional[str] = None
+    company_id: Optional[int] = None
     is_active: bool
     class Config:
         from_attributes = True

@@ -55,17 +55,36 @@ class User(Base):
     __tablename__ = "user_details"
 
     id               = Column("userId", Integer, primary_key=True, index=True)
-    name             = Column(String(100), nullable=False)
+    super_admin_id   = Column("super_admin_id", Integer, ForeignKey("user_details.userId"), nullable=True)
     email            = Column(String(150), unique=True, nullable=False, index=True)
-    hashed_password  = Column(String(255), nullable=False)
-    role             = Column(SAEnum(UserRole), default=UserRole.submitter)
-    department       = Column(String(100))
+    password         = Column("password", String(255), nullable=False)
+    firstName        = Column("firstName", String(100))
+    lastName         = Column("lastName", String(100))
+    phoneNumber      = Column("phoneNumber", String(50))
+    signupDate       = Column("signupDate", String(50))
+    designation      = Column("designation", String(100))
+    onboardingStatus = Column("onboardingStatus", String(100))
+    onboardingToken  = Column("onboardingToken", String(255))
+    tokenExpiry      = Column("tokenExpiry", DateTime, nullable=True)
+    role             = Column("user_type", SAEnum(UserRole), default=UserRole.submitter)
+    company_id       = Column("company_id", Integer, nullable=True)
+    created_at       = Column("created_date", DateTime(timezone=True), server_default=func.now())
+    updated_at       = Column("modified_date", DateTime(timezone=True), onupdate=func.now())
+
+    # Fields from previous model that might not be in client DB but needed for workflow
+    # Keeping them but they might need migration if client DB doesn't have them
     is_active        = Column(Boolean, default=True)
     ooo_until        = Column(DateTime, nullable=True)
     delegate_id      = Column(Integer, ForeignKey("user_details.userId"), nullable=True)
-    created_at       = Column(DateTime(timezone=True), server_default=func.now())
 
-    delegate               = relationship("User", remote_side=[id])
+    @property
+    def name(self):
+        if self.firstName and self.lastName:
+            return f"{self.firstName} {self.lastName}"
+        return self.firstName or self.lastName or "Unknown"
+
+    delegate               = relationship("User", remote_side=[id], foreign_keys=[delegate_id])
+    super_admin            = relationship("User", remote_side=[id], foreign_keys=[super_admin_id])
     submitted_requests     = relationship("WorkflowRequest", foreign_keys="WorkflowRequest.submitter_id", back_populates="submitter")
     approval_actions       = relationship("ApprovalAction", foreign_keys="ApprovalAction.approver_id", back_populates="approver")
 
