@@ -96,51 +96,94 @@ class NotificationService:
         )
 
         for email in approver_emails:
-            html = f"""
-            <div style="font-family:sans-serif;max-width:600px;margin:0 auto">
-              <h2>{subject_verb} required: {workflow_name}</h2>
-              <p>A document is awaiting your {stage_name.lower()}:</p>
-              <table style="border-collapse:collapse;width:100%">
-                <tr><td style="padding:8px;border:1px solid #eee;font-weight:bold">Document</td>
-                    <td style="padding:8px;border:1px solid #eee">{request.document_name or request.title}</td></tr>
-                <tr><td style="padding:8px;border:1px solid #eee;font-weight:bold">Stage</td>
-                    <td style="padding:8px;border:1px solid #eee">{stage_name}</td></tr>
-                <tr><td style="padding:8px;border:1px solid #eee;font-weight:bold">Type</td>
-                    <td style="padding:8px;border:1px solid #eee;text-transform:capitalize">{stage_type}</td></tr>
-                {"" if not request.amount else f'<tr><td style="padding:8px;border:1px solid #eee;font-weight:bold">Amount</td><td style="padding:8px;border:1px solid #eee">&#8377;{request.amount:,.2f}</td></tr>'}
-              </table>
-              <div style="margin:24px 0">
-                <a href="{approve_url}" style="background:#1D9E75;color:white;padding:12px 24px;text-decoration:none;border-radius:6px">{positive_label}</a>
-                &nbsp;&nbsp;
-                <a href="{reject_url}" style="background:#E24B4A;color:white;padding:12px 24px;text-decoration:none;border-radius:6px">{negative_label}</a>
-              </div>
-              <p style="color:#888;font-size:12px">Or review in full: <a href="{FRONTEND_URL}/requests/{request.id}">{FRONTEND_URL}/requests/{request.id}</a></p>
-            </div>
-            """
-            await self.send_email(
-                to=[email],
-                subject=f"[{subject_verb} Required] {request.document_name or request.title} — {stage_name}",
-                html_body=html,
-                text_body=f"{positive_label}: {approve_url}\n{negative_label}: {reject_url}",
-            )
+            # Isolate each recipient — a failure for one must never abort the rest
+            try:
+                amount_row = (
+                    f'<tr><td style="padding:8px;border:1px solid #eee;font-weight:bold">Amount</td>'
+                    f'<td style="padding:8px;border:1px solid #eee">&#8377;{request.amount:,.2f}</td></tr>'
+                    if request.amount else ""
+                )
+                html = f"""
+                <div style="font-family:sans-serif;max-width:600px;margin:0 auto">
+                  <h2>{subject_verb} required: {workflow_name}</h2>
+                  <p>A document is awaiting your {stage_name.lower()}:</p>
+                  <table style="border-collapse:collapse;width:100%">
+                    <tr><td style="padding:8px;border:1px solid #eee;font-weight:bold">Document</td>
+                        <td style="padding:8px;border:1px solid #eee">{request.document_name or request.title}</td></tr>
+                    <tr><td style="padding:8px;border:1px solid #eee;font-weight:bold">Stage</td>
+                        <td style="padding:8px;border:1px solid #eee">{stage_name}</td></tr>
+                    <tr><td style="padding:8px;border:1px solid #eee;font-weight:bold">Type</td>
+                        <td style="padding:8px;border:1px solid #eee;text-transform:capitalize">{stage_type}</td></tr>
+                    {amount_row}
+                  </table>
+                  <div style="margin:24px 0">
+                    <a href="{approve_url}" style="background:#1D9E75;color:white;padding:12px 24px;text-decoration:none;border-radius:6px">{positive_label}</a>
+                    &nbsp;&nbsp;
+                    <a href="{reject_url}" style="background:#E24B4A;color:white;padding:12px 24px;text-decoration:none;border-radius:6px">{negative_label}</a>
+                  </div>
+                  <p style="color:#888;font-size:12px">Or review in full: <a href="{FRONTEND_URL}/requests/{request.id}">{FRONTEND_URL}/requests/{request.id}</a></p>
+                </div>
+                """
+                await self.send_email(
+                    to=[email],
+                    subject=f"[{subject_verb} Required] {request.document_name or request.title} — {stage_name}",
+                    html_body=html,
+                    text_body=f"{positive_label}: {approve_url}\n{negative_label}: {reject_url}",
+                )
+            except Exception as exc:
+                logger.error("notify_approvers: failed for %s — %s", email, exc)
 
     async def notify_submitter_completed(
         self,
         submitter_email: str,
         request,
         workflow_name: str,
+        approver_comments: list = None,
     ) -> None:
         from models import RequestStatus
         status_word = "approved" if request.status in (
             RequestStatus.approved,
         ) else "rejected"
         colour = "#1D9E75" if status_word == "approved" else "#E24B4A"
+
+        # Build comments section
+        comments_html = ""
+        if approver_comments:
+            rows = "".join(
+                f'<tr><td style="padding:8px;border:1px solid #eee;font-weight:bold">'
+                f'{c["approver_name"]}</td>'
+                f'<td style="padding:8px;border:1px solid #eee">'
+                f'{c["comment"] or "<em style=\'color:#aaa\'>No comment</em>"}</td></tr>'
+                for c in approver_comments
+            )
+            comments_html = f"""
+            <h3 style="margin-top:24px;font-size:14px">Approver Comments</h3>
+            <table style="border-collapse:collapse;width:100%">
+              <thead>
+                <tr>
+                  <th style="padding:8px;border:1px solid #eee;text-align:left;background:#f5f5f5">Approver</th>
+                  <th style="padding:8px;border:1px solid #eee;text-align:left;background:#f5f5f5">Comment</th>
+                </tr>
+              </thead>
+              <tbody>{rows}</tbody>
+            </table>
+            """
+
         html = f"""
         <div style="font-family:sans-serif;max-width:600px;margin:0 auto">
           <h2 style="color:{colour}">Document {status_word.title()}</h2>
           <p>Your document <strong>{request.document_name or request.title}</strong> has been
           <strong>{status_word}</strong> in the <em>{workflow_name}</em> workflow.</p>
-          <p><a href="{FRONTEND_URL}/requests/{request.id}">View details &#8594;</a></p>
+          {comments_html}
+          <div style="margin-top:24px">
+            <a href="{FRONTEND_URL}/requests?request={request.id}"
+               style="background:#4F7DFF;color:white;padding:12px 28px;text-decoration:none;border-radius:6px;font-weight:600">
+              View Request &rarr;
+            </a>
+          </div>
+          <p style="color:#888;font-size:12px;margin-top:16px">
+            Or copy this link: {FRONTEND_URL}/requests?request={request.id}
+          </p>
         </div>
         """
         await self.send_email(
