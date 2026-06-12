@@ -332,3 +332,125 @@ def one_click_action(
     db.commit()
     db.refresh(req)
     return req
+
+
+@router.post("/action/{req_id}", response_model=RequestOut)
+def take_action_by_user(
+    req_id: int,
+    action: str = Query(..., description="'approved' or 'rejected'"),
+    user_id: int = Query(...),
+    comment: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+):
+    """
+    In-app action handler — approve or reject a request stage using user_id,
+    consistent with all other endpoints in this router.
+    """
+    if action not in ("approved", "rejected"):
+        raise HTTPException(400, "action must be 'approved' or 'rejected'")
+
+    current_user = _get_user_or_404(user_id, db)
+
+    req = db.query(models.WorkflowRequest).filter(models.WorkflowRequest.id == req_id).first()
+    if not req:
+        raise HTTPException(404, "Request not found")
+
+    if req.status != models.RequestStatus.pending:
+        raise HTTPException(400, f"Request is already {req.status.value}")
+
+    # Find the currently active stage for this request
+    active_stage = (
+        db.query(models.RequestStage)
+        .filter(
+            models.RequestStage.request_id == req_id,
+            models.RequestStage.stage_order == req.current_stage,
+            models.RequestStage.status == models.RequestStatus.pending,
+        )
+        .first()
+    )
+    if not active_stage:
+        # Self-heal: fall back to the lowest-order pending stage
+        active_stage = (
+            db.query(models.RequestStage)
+            .filter(
+                models.RequestStage.request_id == req_id,
+                models.RequestStage.status == models.RequestStatus.pending,
+            )
+            .order_by(models.RequestStage.stage_order)
+            .first()
+        )
+        if active_stage:
+            now = datetime.utcnow()
+            if active_stage.started_at is None:
+                stage_def_heal = db.query(models.WorkflowStage).filter(
+                    models.WorkflowStage.id == active_stage.stage_id
+                ).first()
+                active_stage.started_at = now
+                if stage_def_heal:
+                    active_stage.sla_deadline = now + timedelta(hours=stage_def_heal.sla_hours)
+            req.current_stage = active_stage.stage_order
+            db.flush()
+            db.refresh(req)
+            if req.status != models.RequestStatus.pending:
+                raise HTTPException(400, f"Request is already {req.status.value}")
+
+    if not active_stage:
+        raise HTTPException(400, "No active stage found for this request")
+
+    stage_def = db.query(models.WorkflowStage).filter(
+        models.WorkflowStage.id == active_stage.stage_id
+    ).first()
+
+    # Verify the user belongs to the approver group for this stage
+    if current_user.role not in (models.UserRole.admin,):
+        membership = (
+            db.query(models.ApproverGroupMember)
+            .filter(
+                models.ApproverGroupMember.group_id == stage_def.approver_group_id,
+                models.ApproverGroupMember.user_id == current_user.id,
+            )
+            .first()
+        ) if stage_def else None
+        if not membership:
+            raise HTTPException(403, "You are not in the approver group for this stage")
+
+    # Prevent duplicate action
+    existing = (
+        db.query(models.ApprovalAction)
+        .filter(
+            models.ApprovalAction.request_stage_id == active_stage.id,
+            models.ApprovalAction.approver_id == current_user.id,
+        )
+        .first()
+    )
+    if existing:
+        raise HTTPException(400, "You have already acted on this stage")
+
+    decision = (
+        models.ApprovalDecision.approved
+        if action == "approved"
+        else models.ApprovalDecision.rejected
+    )
+
+    approval_action = models.ApprovalAction(
+        request_stage_id=active_stage.id,
+        approver_id=current_user.id,
+        decision=decision,
+        comment=comment or "Via in-app action",
+    )
+    db.add(approval_action)
+    db.flush()
+
+    db.add(models.ActivityLog(
+        request_id=req.id,
+        user_id=current_user.id,
+        action=action,
+        detail=f"Stage {req.current_stage} {action} by {current_user.name}. {comment or ''}",
+    ))
+
+    from routers.approvals import _check_stage_completion
+    _check_stage_completion(db, active_stage, req)
+
+    db.commit()
+    db.refresh(req)
+    return req
