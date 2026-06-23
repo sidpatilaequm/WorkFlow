@@ -151,3 +151,125 @@ class TestMe:
     def test_me_bad_token(self, client):
         r = client.get("/api/auth/me", headers={"Authorization": "Bearer bad.token"})
         assert r.status_code == 401
+
+
+# ── /api/auth/me/out-of-office ────────────────────────────────────────────────
+
+class TestOutOfOffice:
+    """PATCH /api/auth/me/out-of-office — self-service OOO + delegate."""
+
+    def _token(self, db, email):
+        from auth_utils import create_access_token
+        user = make_user(db, email=email)
+        db.commit()
+        return create_access_token(data={"sub": user.id}), user
+
+    def test_set_ooo_with_delegate(self, client, db):
+        from datetime import datetime, timedelta
+        token, user = self._token(db, "ooo1@x.com")
+        delegate = make_user(db, email="ooo1d@x.com")
+        db.commit()
+        future = (datetime.utcnow() + timedelta(days=3)).isoformat()
+        r = client.patch(
+            "/api/auth/me/out-of-office",
+            json={"ooo_until": future, "delegate_id": delegate.id},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200
+        data = r.json()
+        assert data["ooo_until"] is not None
+        assert data["delegate_id"] == delegate.id
+
+    def test_clear_ooo(self, client, db):
+        from datetime import datetime, timedelta
+        token, user = self._token(db, "ooo2@x.com")
+        delegate = make_user(db, email="ooo2d@x.com")
+        user.ooo_until = datetime.utcnow() + timedelta(days=2)
+        user.delegate_id = delegate.id
+        db.commit()
+        r = client.patch(
+            "/api/auth/me/out-of-office",
+            json={"ooo_until": None, "delegate_id": None},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200
+        data = r.json()
+        assert data["ooo_until"] is None
+        assert data["delegate_id"] is None
+
+    def test_cannot_delegate_to_self(self, client, db):
+        from datetime import datetime, timedelta
+        token, user = self._token(db, "ooo3@x.com")
+        future = (datetime.utcnow() + timedelta(days=1)).isoformat()
+        r = client.patch(
+            "/api/auth/me/out-of-office",
+            json={"ooo_until": future, "delegate_id": user.id},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 400
+
+    def test_nonexistent_delegate_rejected(self, client, db):
+        from datetime import datetime, timedelta
+        token, user = self._token(db, "ooo4@x.com")
+        future = (datetime.utcnow() + timedelta(days=1)).isoformat()
+        r = client.patch(
+            "/api/auth/me/out-of-office",
+            json={"ooo_until": future, "delegate_id": 99999},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 404
+
+    def test_no_token_unauthorized(self, client):
+        r = client.patch(
+            "/api/auth/me/out-of-office",
+            json={"ooo_until": None, "delegate_id": None},
+        )
+        assert r.status_code == 401
+
+    def test_set_ooo_without_delegate(self, client, db):
+        """ooo_until can be set without a delegate — notifications still go
+        to the principal but no one can stand in for them."""
+        from datetime import datetime, timedelta
+        token, user = self._token(db, "ooo5@x.com")
+        future = (datetime.utcnow() + timedelta(days=1)).isoformat()
+        r = client.patch(
+            "/api/auth/me/out-of-office",
+            json={"ooo_until": future, "delegate_id": None},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200
+        assert r.json()["delegate_id"] is None
+        assert r.json()["ooo_until"] is not None
+
+    def test_ooo_propagates_to_live_stand_in_flow(self, client, db):
+        """End-to-end: set OOO via the endpoint, then verify the delegate
+        can immediately act as stand-in on an active approval stage."""
+        import models
+        from auth_utils import create_access_token
+        from datetime import datetime, timedelta
+        from conftest import make_group, make_workflow, make_request
+
+        admin = make_user(db, email="oooe2e-admin@x.com", role=models.UserRole.admin)
+        principal = make_user(db, email="oooe2e-p@x.com", role=models.UserRole.approver)
+        delegate = make_user(db, email="oooe2e-d@x.com", role=models.UserRole.approver)
+        submitter = make_user(db, email="oooe2e-s@x.com")
+        group = make_group(db, members=[principal])
+        wf = make_workflow(db, admin, group)
+        req = make_request(db, submitter, wf)
+        db.commit()
+
+        principal_token = create_access_token(data={"sub": principal.id})
+        future = (datetime.utcnow() + timedelta(days=2)).isoformat()
+        r_ooo = client.patch(
+            "/api/auth/me/out-of-office",
+            json={"ooo_until": future, "delegate_id": delegate.id},
+            headers={"Authorization": f"Bearer {principal_token}"},
+        )
+        assert r_ooo.status_code == 200
+
+        r_act = client.post(f"/api/approvals/?user_id={delegate.id}", json={
+            "request_id": req.id, "decision": "approved",
+        })
+        assert r_act.status_code == 200
+        db.refresh(req)
+        assert req.status == models.RequestStatus.approved

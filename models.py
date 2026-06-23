@@ -102,10 +102,14 @@ class ApproverGroup(Base):
 class ApproverGroupMember(Base):
     __tablename__ = "approver_group_members"
 
-    id               = Column(Integer, primary_key=True, index=True)
-    group_id         = Column(Integer, ForeignKey("approver_groups.id", ondelete="CASCADE"))
-    user_id          = Column(Integer, ForeignKey("user_details.userId", ondelete="CASCADE"))
+    id       = Column(Integer, primary_key=True, index=True)
+    group_id = Column(Integer, ForeignKey("approver_groups.id", ondelete="CASCADE"))
+    user_id  = Column(Integer, ForeignKey("user_details.userId", ondelete="CASCADE"))
     sequential_order = Column(Integer, default=0)
+    # Notified like every other member, but their decision never counts
+    # toward stage completion and never blocks the stage (see
+    # routers/approvals.py:_check_stage_completion).
+    is_optional = Column(Boolean, default=False)
 
     group    = relationship("ApproverGroup", back_populates="members")
     user     = relationship("User")
@@ -126,6 +130,11 @@ class Workflow(Base):
     notification_channel    = Column(SAEnum(NotificationChannel), default=NotificationChannel.email)
     auto_approve_hours      = Column(Integer, nullable=True)
     amount_threshold        = Column(Float, nullable=True)
+
+    # Where to send the browser after a one-click email action resolves.
+    # Falls back to FRONTEND_URL/requests/{id} when not set.
+    success_redirect_url = Column(String(500), nullable=True)
+    failure_redirect_url = Column(String(500), nullable=True)
     auto_approve_conditions = Column(JSON, nullable=True)
 
     # ── Reminder settings ────────────────────────────────────────────────────
@@ -135,6 +144,14 @@ class Workflow(Base):
     # How often (hours) to repeat the reminder until the stage is resolved.
     # e.g. 4 → re-send every 4 hours after the first reminder.
     reminder_interval_hours = Column(Integer, nullable=True)
+
+    # Derived/templated values available to message templates (stage
+    # `instructions`, and ad-hoc messages via send_message). Each entry is
+    # {"name": str, "formula": str}, e.g. {"name": "tax", "formula": "amount * 0.18"}.
+    # Evaluated in order via template_utils.resolve_template_variables, on
+    # top of the request's own fields and request_metadata. See
+    # template_utils.py for the formula grammar (arithmetic only, no calls).
+    message_variables    = Column(JSON, nullable=True)
 
     created_by_id        = Column(Integer, ForeignKey("user_details.userId"))
     created_at           = Column(DateTime(timezone=True), server_default=func.now())
@@ -160,8 +177,19 @@ class WorkflowStage(Base):
     approver_group_id = Column(Integer, ForeignKey("approver_groups.id"))
     sla_hours         = Column(Integer, default=48)
     voting_rule       = Column(SAEnum(VotingRule), default=VotingRule.any)
+
+    # Free-text overrides for the email action buttons. When null, the
+    # stage `type` preset (see NotificationService.STAGE_TYPE_LABELS) is used.
+    approve_label     = Column(String(50), nullable=True)
+    reject_label      = Column(String(50), nullable=True)
     is_optional       = Column(Boolean, default=False)
     instructions      = Column(Text, nullable=True)
+
+    # Parallel stage execution: stages sharing the same non-null parallel_group
+    # integer (within the same workflow) start simultaneously and all must
+    # complete before the workflow advances to the next serial stage.
+    # NULL means the stage runs serially in order.
+    parallel_group    = Column(Integer, nullable=True)
 
     condition_field   = Column(String(100))
     condition_op      = Column(String(20))
@@ -195,6 +223,13 @@ class WorkflowRequest(Base):
     submitted_at  = Column(DateTime(timezone=True), server_default=func.now())
     resolved_at   = Column(DateTime(timezone=True), nullable=True)
     sla_deadline  = Column(DateTime(timezone=True), nullable=True)
+
+    # Frozen copy of the workflow's stage/group config at the moment this
+    # request was submitted (see routers/requests.py:_build_workflow_snapshot).
+    # The live Workflow/WorkflowStage/ApproverGroup rows can keep changing —
+    # this column is what lets a request's "as submitted" config be shown
+    # later even after an admin edits or reorders the workflow.
+    workflow_snapshot = Column(JSON, nullable=True)
 
     workflow      = relationship("Workflow", back_populates="requests")
     submitter     = relationship("User", foreign_keys=[submitter_id], back_populates="submitted_requests")
@@ -277,6 +312,22 @@ class RequestStage(Base):
     def voting_rule(self):
         return self.stage.voting_rule.value if self.stage and self.stage.voting_rule else None
 
+    @property
+    def approve_label(self):
+        return self.stage.approve_label if self.stage else None
+
+    @property
+    def reject_label(self):
+        return self.stage.reject_label if self.stage else None
+
+    @property
+    def is_optional(self):
+        return self.stage.is_optional if self.stage else False
+
+    @property
+    def parallel_group(self):
+        return self.stage.parallel_group if self.stage else None
+
 
 class ApprovalAction(Base):
     __tablename__ = "approval_actions"
@@ -286,12 +337,21 @@ class ApprovalAction(Base):
     approver_id      = Column(Integer, ForeignKey("user_details.userId"))
     decision         = Column(SAEnum(ApprovalDecision), nullable=False)
     comment          = Column(Text)
+    # Optional document uploaded alongside the approve/reject decision
+    # (e.g. a signed copy, a rejection memo). Set via /api/requests/upload
+    # then referenced here by the client.
+    document_name    = Column(String(300), nullable=True)
+    document_url     = Column(String(500), nullable=True)
     delegated_to_id  = Column(Integer, ForeignKey("user_details.userId"), nullable=True)
     acted_at         = Column(DateTime(timezone=True), server_default=func.now())
 
     request_stage    = relationship("RequestStage", back_populates="actions")
     approver         = relationship("User", foreign_keys=[approver_id], back_populates="approval_actions")
     delegated_to     = relationship("User", foreign_keys=[delegated_to_id])
+
+    @property
+    def approver_name(self):
+        return self.approver.name if self.approver else None
 
 
 class ActivityLog(Base):
@@ -320,3 +380,59 @@ class WebhookConfig(Base):
     secret      = Column(String(200))
     is_active   = Column(Boolean, default=True)
     created_at  = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class ScheduledMessage(Base):
+    """
+    A recurring ad-hoc message created via POST /requests/{id}/send-message
+    when the caller supplies reminder_interval_hours. The scheduler
+    (services/escalation.py:send_message_reminders) resends `message` every
+    reminder_interval_hours for as long as the parent request's status
+    hasn't changed away from pending (i.e. "the relevant status was not
+    achieved") and reminders_sent < max_reminders (if set).
+    """
+    __tablename__ = "scheduled_messages"
+
+    id                      = Column(Integer, primary_key=True, index=True)
+    request_id              = Column(Integer, ForeignKey("workflow_requests.id", ondelete="CASCADE"))
+    sender_id               = Column(Integer, ForeignKey("user_details.userId"), nullable=True)
+    to                       = Column(String(50), nullable=False)   # "submitter" | "current_approvers" | "custom"
+    custom_emails           = Column(JSON, nullable=True)
+    subject                 = Column(String(300), nullable=True)
+    message                  = Column(Text, nullable=False)
+    reminder_interval_hours = Column(Integer, nullable=False)
+    max_reminders            = Column(Integer, nullable=True)        # None = unlimited until resolved
+    reminders_sent           = Column(Integer, default=0)
+    last_sent_at             = Column(DateTime(timezone=True), nullable=True)
+    is_active                = Column(Boolean, default=True)
+    created_at               = Column(DateTime(timezone=True), server_default=func.now())
+
+    request = relationship("WorkflowRequest")
+    sender  = relationship("User")
+
+
+class StandaloneMessage(Base):
+    """
+    A standalone notification fired without any workflow request context.
+    Created via POST /api/messages/ — supports the "send message on button
+    click" use case (Messaging #4) where a user wants to fire a notification
+    to one or more email addresses without creating or referencing a request.
+    Supports {{field}} template rendering against a flat key-value `context`
+    dict and optional recurring resend (reminder_interval_hours).
+    """
+    __tablename__ = "standalone_messages"
+
+    id                      = Column(Integer, primary_key=True, index=True)
+    sender_id               = Column(Integer, ForeignKey("user_details.userId"), nullable=True)
+    to_emails               = Column(JSON, nullable=False)   # list of email strings
+    subject                 = Column(String(300), nullable=True)
+    message                 = Column(Text, nullable=False)
+    context                 = Column(JSON, nullable=True)    # flat key-value dict for {{}} rendering
+    reminder_interval_hours = Column(Integer, nullable=True) # None = one-shot
+    max_reminders           = Column(Integer, nullable=True) # None = unlimited until manually stopped
+    reminders_sent          = Column(Integer, default=0)
+    last_sent_at            = Column(DateTime(timezone=True), nullable=True)
+    is_active               = Column(Boolean, default=True)
+    created_at              = Column(DateTime(timezone=True), server_default=func.now())
+
+    sender = relationship("User")

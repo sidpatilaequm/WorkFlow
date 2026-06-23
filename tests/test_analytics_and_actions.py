@@ -108,6 +108,52 @@ class TestAnalyticsApproverPerformance:
         assert r.status_code == 200
         assert isinstance(r.json(), list)
 
+    def test_approver_performance_data_driven(self, client, db):
+        """Verify the grouping, decision counts, and avg_response_hours
+        math with real ApprovalAction rows. This replaces the empty-list
+        smoke test with a genuine calculation check."""
+        from datetime import datetime, timedelta
+        admin = make_user(db, email="apfdata@x.com", role=models.UserRole.admin)
+        a1 = make_user(db, email="apfa1@x.com", role=models.UserRole.approver)
+        a2 = make_user(db, email="apfa2@x.com", role=models.UserRole.approver)
+        submitter = make_user(db, email="apfs@x.com")
+        group = make_group(db, members=[a1, a2])
+        wf = make_workflow(db, admin, group, voting_rule=models.VotingRule.all)
+        req = make_request(db, submitter, wf)
+        db.commit()
+
+        rs = req.stages[0]
+        # Backdate stage start so response_seconds > 0
+        rs.started_at = datetime.utcnow() - timedelta(hours=2)
+        db.flush()
+
+        # a1 approves, a2 rejects
+        db.add(models.ApprovalAction(
+            request_stage_id=rs.id, approver_id=a1.id,
+            decision=models.ApprovalDecision.approved,
+        ))
+        db.add(models.ApprovalAction(
+            request_stage_id=rs.id, approver_id=a2.id,
+            decision=models.ApprovalDecision.rejected,
+        ))
+        db.commit()
+
+        r = client.get(f"/api/analytics/approver-performance?user_id={admin.id}")
+        assert r.status_code == 200
+        rows = {row["approver_id"]: row for row in r.json()}
+
+        assert a1.id in rows
+        assert rows[a1.id]["approved"] == 1
+        assert rows[a1.id]["rejected"] == 0
+        assert rows[a1.id]["total_decisions"] == 1
+        # avg_response_hours should be > 0 (stage started 2 hours ago)
+        assert rows[a1.id]["avg_response_hours"] is not None
+        assert rows[a1.id]["avg_response_hours"] > 0
+
+        assert a2.id in rows
+        assert rows[a2.id]["rejected"] == 1
+        assert rows[a2.id]["approved"] == 0
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Analytics — Activity feed

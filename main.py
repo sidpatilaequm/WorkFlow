@@ -7,7 +7,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 from database import engine, Base
-from routers import workflows, requests, stages, approvals, analytics, auth
+from routers import workflows, requests, stages, approvals, analytics, auth, messages
 from services.escalation import start_scheduler, stop_scheduler
 
 load_dotenv()
@@ -62,6 +62,7 @@ app.include_router(requests.router,   prefix="/api/requests",  tags=["Requests"]
 app.include_router(stages.router,     prefix="/api/stages",    tags=["Stages"])
 app.include_router(approvals.router,  prefix="/api/approvals", tags=["Approvals"])
 app.include_router(analytics.router,  prefix="/api/analytics", tags=["Analytics"])
+app.include_router(messages.router,   prefix="/api/messages",  tags=["Messages"])
 
 
 @app.get("/health")

@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from database import get_db
-from schemas import UserOut, Token, TokenResponse, LoginRequest, RefreshRequest, UserCreate
+from schemas import UserCreate, UserOut, Token, TokenResponse, LoginRequest, RefreshRequest, OutOfOfficeUpdate
 from auth_utils import (
     verify_password, hash_password,
     create_access_token, create_refresh_token,
@@ -81,5 +81,37 @@ def refresh(payload: RefreshRequest, db: Session = Depends(get_db)):
 
 
 @router.get("/me", response_model=UserOut)
-def me(current_user: models.User = Depends(get_current_user)):
+def me(user_id: int, db: Session = Depends(get_db)):
+    user = db.query(models.User).filter(models.User.id == user_id, models.User.is_active == True).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return user
+
+
+@router.patch("/me/out-of-office", response_model=UserOut)
+def set_out_of_office(
+    payload: OutOfOfficeUpdate,
+    user_id: int = 0,
+    db: Session = Depends(get_db),
+):
+    """
+    Mark yourself out-of-office until a given time and name a delegate.
+    While ooo_until is in the future, any approver-group notification meant
+    for you is sent to your delegate instead, and your delegate may act on
+    your behalf — the action is still recorded against your approver slot.
+    Pass ooo_until: null to clear OOO status.
+    """
+    current_user = db.query(models.User).filter(models.User.id == user_id, models.User.is_active == True).first()
+    if not current_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if payload.delegate_id is not None:
+        if payload.delegate_id == current_user.id:
+            raise HTTPException(400, "Cannot delegate to yourself")
+        delegate = db.query(models.User).filter(models.User.id == payload.delegate_id).first()
+        if not delegate:
+            raise HTTPException(404, "Delegate user not found")
+    current_user.ooo_until = payload.ooo_until
+    current_user.delegate_id = payload.delegate_id
+    db.commit()
+    db.refresh(current_user)
     return current_user

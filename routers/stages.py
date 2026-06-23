@@ -28,7 +28,15 @@ def _get_user_or_404(user_id: int, db: Session) -> models.User:
 
 class MemberAdd(BaseModel):
     user_id: int
+    is_optional: bool = False
     sequential_order: int = 0
+
+class MemberOptionalUpdate(BaseModel):
+    is_optional: bool
+    sequential_order: int = 0
+
+class MemberSubstitute(BaseModel):
+    new_user_id: int
 
 class ApproverGroupDetailOut(ApproverGroupOut):
     members: list = []
@@ -48,7 +56,7 @@ def list_groups(user_id: int = Query(...), db: Session = Depends(get_db)):
                 "id": m.user.id, 
                 "name": m.user.name, 
                 "email": m.user.email, 
-                "role": m.user.role,
+                "role": m.user.role, "is_optional": m.is_optional,
                 "sequential_order": m.sequential_order
             }
             for m in sorted_members if m.user
@@ -66,10 +74,20 @@ def create_group(
     group = models.ApproverGroup(name=payload.name, description=payload.description)
     db.add(group)
     db.flush()
-    for idx, uid in enumerate(payload.member_ids):
+    # optional_member_ids and member_ids may overlap; optional wins on overlap.
+    # sequential_order follows the order members were listed in member_ids,
+    # with any optional-only members appended after.
+    ordered_uids = list(dict.fromkeys(payload.member_ids + payload.optional_member_ids))
+    optional_set = set(payload.optional_member_ids)
+    for idx, uid in enumerate(ordered_uids):
         user = db.query(models.User).filter(models.User.id == uid).first()
         if user:
-            db.add(models.ApproverGroupMember(group_id=group.id, user_id=uid, sequential_order=idx))
+            db.add(models.ApproverGroupMember(
+                group_id=group.id,
+                user_id=uid,
+                is_optional=uid in optional_set,
+                sequential_order=idx,
+            ))
     db.commit()
     db.refresh(group)
     sorted_members = sorted(group.members, key=lambda m: m.sequential_order)
@@ -78,7 +96,7 @@ def create_group(
             "id": m.user.id, 
             "name": m.user.name, 
             "email": m.user.email, 
-            "role": m.user.role,
+            "role": m.user.role, "is_optional": m.is_optional,
             "sequential_order": m.sequential_order
         }
         for m in sorted_members if m.user
@@ -122,11 +140,31 @@ def add_member(
     else:
         db.add(models.ApproverGroupMember(
             group_id=group_id, 
-            user_id=payload.user_id, 
+            user_id=payload.user_id, is_optional=payload.is_optional, 
             sequential_order=payload.sequential_order
         ))
     db.commit()
     return {"detail": "Member added/updated"}
+
+@router.patch("/approver-groups/{group_id}/members/{member_user_id}")
+def set_member_optional(
+    group_id: int,
+    member_user_id: int,
+    payload: MemberOptionalUpdate,
+    user_id: int = Query(...),
+    db: Session = Depends(get_db),
+):
+    """Toggle whether an existing member is optional (notified, but never blocks the stage)."""
+    _require_admin(user_id, db)
+    member = db.query(models.ApproverGroupMember).filter(
+        models.ApproverGroupMember.group_id == group_id,
+        models.ApproverGroupMember.user_id == member_user_id
+    ).first()
+    if not member:
+        raise HTTPException(404, "Member not found")
+    member.is_optional = payload.is_optional
+    db.commit()
+    return {"detail": "Updated", "is_optional": member.is_optional}
 
 @router.delete("/approver-groups/{group_id}/members/{user_id_path}")
 def remove_member(
@@ -146,13 +184,79 @@ def remove_member(
     db.commit()
     return {"detail": "Member removed"}
 
+
+@router.post("/approver-groups/{group_id}/members/{user_id_path}/substitute")
+def substitute_member(
+    group_id: int,
+    user_id_path: int,
+    payload: MemberSubstitute,
+    user_id: int = Query(..., description="Admin performing the substitution"),
+    db: Session = Depends(get_db),
+):
+    """
+    Swap approver `user_id_path` for `payload.new_user_id` within this group,
+    in place — the membership row's sequential_order and is_optional carry
+    over unchanged, only the user changes. This is the general "swap
+    approver A for approver B" admin action (Workflow #3), distinct from the
+    automatic OOO/delegate substitution in workflow_snapshot.py /
+    approvals.py, which only kicks in for a user who's currently OOO.
+
+    Like every other live-table edit in this router, this affects only the
+    *live* group going forward; requests already in flight keep running
+    against their frozen workflow_snapshot (see workflow_snapshot.py) and
+    are unaffected.
+    """
+    _require_admin(user_id, db)
+
+    group = db.query(models.ApproverGroup).filter(models.ApproverGroup.id == group_id).first()
+    if not group:
+        raise HTTPException(404, "Group not found")
+
+    member = db.query(models.ApproverGroupMember).filter(
+        models.ApproverGroupMember.group_id == group_id,
+        models.ApproverGroupMember.user_id == user_id_path,
+    ).first()
+    if not member:
+        raise HTTPException(404, "Member not found")
+
+    new_user = db.query(models.User).filter(
+        models.User.id == payload.new_user_id, models.User.is_active == True
+    ).first()
+    if not new_user:
+        raise HTTPException(404, "Substitute user not found")
+
+    if payload.new_user_id == user_id_path:
+        raise HTTPException(400, "new_user_id must differ from the member being substituted")
+
+    already_in_group = db.query(models.ApproverGroupMember).filter(
+        models.ApproverGroupMember.group_id == group_id,
+        models.ApproverGroupMember.user_id == payload.new_user_id,
+    ).first()
+    if already_in_group:
+        raise HTTPException(400, "Substitute user is already a member of this group")
+
+    member.user_id = payload.new_user_id
+    db.commit()
+    return {
+        "detail": "Member substituted",
+        "group_id": group_id,
+        "replaced_user_id": user_id_path,
+        "new_user_id": payload.new_user_id,
+    }
+
 # ─── Users list (for adding to groups) ───────────────────────────────────────
 
 @router.get("/users")
 def list_users(user_id: int = Query(...), db: Session = Depends(get_db)):
     _require_admin(user_id, db)
     users = db.query(models.User).filter(models.User.is_active == True).all()
-    return [{"id": u.id, "name": u.name, "email": u.email, "role": u.role, "company_id": u.company_id} for u in users]
+    return [
+        {
+            "id": u.id, "name": u.name, "email": u.email, "role": u.role, "company_id": u.company_id,
+            "ooo_until": u.ooo_until, "delegate_id": u.delegate_id,
+        }
+        for u in users
+    ]
 
 # ─── Workflow Stages ──────────────────────────────────────────────────────────
 

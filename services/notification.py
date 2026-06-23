@@ -87,6 +87,9 @@ class NotificationService:
         approve_token: str,
         reject_token: str,
         stage_type: str = "approval",
+        approve_label: str = None,
+        reject_label: str = None,
+        note: str = None,
         instructions: str = None,
     ) -> None:
         approve_url = f"{FRONTEND_URL}/action/{approve_token}"
@@ -95,6 +98,9 @@ class NotificationService:
         positive_label, negative_label, subject_verb = self.STAGE_TYPE_LABELS.get(
             stage_type, self.STAGE_TYPE_LABELS["approval"]
         )
+        # Per-stage free-text overrides win over the type preset.
+        positive_label = approve_label or positive_label
+        negative_label = reject_label or negative_label
 
         instructions_section = ""
         if instructions:
@@ -113,9 +119,14 @@ class NotificationService:
                     f'<td style="padding:8px;border:1px solid #eee">&#8377;{request.amount:,.2f}</td></tr>'
                     if request.amount else ""
                 )
+                note_html = (
+                    f'<p style="background:#FFF7E0;padding:10px 14px;border-radius:6px;color:#7A5B00;font-size:13px">{note}</p>'
+                    if note else ""
+                )
                 html = f"""
                 <div style="font-family:sans-serif;max-width:600px;margin:0 auto">
                   <h2>{subject_verb} required: {workflow_name}</h2>
+                  {note_html}
                   <p>A document is awaiting your {stage_name.lower()}:</p>
                   <table style="border-collapse:collapse;width:100%">
                     <tr><td style="padding:8px;border:1px solid #eee;font-weight:bold">Document</td>
@@ -203,6 +214,57 @@ class NotificationService:
             to=[submitter_email],
             subject=f"[{status_word.upper()}] {request.document_name or request.title}",
             html_body=html,
+        )
+
+    # -------------------------------------------------------------------------
+    # Standalone Messages (Messaging #4)
+    # -------------------------------------------------------------------------
+    async def send_standalone_message(
+        self,
+        to: list,
+        subject: str,
+        message: str,
+        sender_name: str,
+    ) -> bool:
+        """Send a standalone email notification with no workflow-request context."""
+        html = f"""
+        <div style="font-family:sans-serif;max-width:600px;margin:0 auto">
+          <h2>{subject}</h2>
+          <p style="color:#888;font-size:13px">From {sender_name}</p>
+          <div style="background:#F5F6F8;border-radius:8px;padding:16px;white-space:pre-wrap">{message}</div>
+        </div>
+        """
+        return await self.send_email(
+            to=to,
+            subject=subject,
+            html_body=html,
+            text_body=message,
+        )
+
+    # -------------------------------------------------------------------------
+    # Ad-hoc messages (no stage / no SLA attached)
+    # -------------------------------------------------------------------------
+    async def notify_custom_message(
+        self,
+        to: list[str],
+        request,  # models.WorkflowRequest
+        message: str,
+        sender_name: str,
+        subject: Optional[str] = None,
+    ) -> bool:
+        html = f"""
+        <div style="font-family:sans-serif;max-width:600px;margin:0 auto">
+          <h2>Message about: {request.document_name or request.title}</h2>
+          <p style="color:#888;font-size:13px">From {sender_name} · Request #{request.id}</p>
+          <div style="background:#F5F6F8;border-radius:8px;padding:16px;white-space:pre-wrap">{message}</div>
+          <p style="margin-top:20px"><a href="{FRONTEND_URL}/requests/{request.id}">View request &rarr;</a></p>
+        </div>
+        """
+        return await self.send_email(
+            to=to,
+            subject=subject or f"[Message] {request.document_name or request.title}",
+            html_body=html,
+            text_body=message,
         )
 
     # -------------------------------------------------------------------------
