@@ -15,7 +15,7 @@ def _get_user_or_404(user_id: int, db: Session) -> models.User:
 
 def _require_admin(user_id: int, db: Session) -> models.User:
     user = _get_user_or_404(user_id, db)
-    if user.role != models.UserRole.admin:
+    if user.role not in (models.UserRole.admin, models.UserRole.SUPER_ADMIN):
         raise HTTPException(403, "Admin role required")
     return user
 

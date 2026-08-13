@@ -94,3 +94,27 @@ dmypy.json
 
 # Jupyter Notebook
 .ipynb_checkpoints
+
+# Temp scripts
+fix_*.py
+test_*.py
+check_*.py
+update_*.py
+query_*.py
+add_*.py
+scratch.py
+missing_schemas.py
+workflow_snapshot.py
+get_error.py
+count_vendors.py
+
+# Temp texts
+*.txt
+!requirements.txt
+
+# Uploads
+uploads/
+*.pdf
+
+# DB schemas
+*.sql

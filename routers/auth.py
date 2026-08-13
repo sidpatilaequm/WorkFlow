@@ -35,6 +35,19 @@ def register(payload: UserCreate, db: Session = Depends(get_db)):
         is_active=True,
     )
     db.add(user)
+    db.flush()
+    
+    # Also create Employee record automatically
+    from main import _uid
+    emp = models.Employee(
+        employee_code=_uid("EMP-"),
+        name=f"{payload.firstName} {payload.lastName or ''}".strip(),
+        title=payload.designation,
+        email=payload.email,
+        password=payload.password, # Storing plain password in Employee table as requested
+    )
+    db.add(emp)
+    
     db.commit()
     db.refresh(user)
     return user

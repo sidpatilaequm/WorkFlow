@@ -305,6 +305,8 @@ def list_requests(
         )
         if status:
             q = q.filter(models.WorkflowRequest.status == status)
+        if workflow_id:
+            q = q.filter(models.WorkflowRequest.workflow_id == workflow_id)
         return q.all()
 
     q = db.query(models.WorkflowRequest).filter(
@@ -312,6 +314,8 @@ def list_requests(
     )
     if status:
         q = q.filter(models.WorkflowRequest.status == status)
+    if workflow_id:
+        q = q.filter(models.WorkflowRequest.workflow_id == workflow_id)
     return q.all()
 
 

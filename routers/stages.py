@@ -13,7 +13,7 @@ def _require_admin(user_id: int, db: Session) -> models.User:
     user = db.query(models.User).filter(models.User.id == user_id, models.User.is_active == True).first()
     if not user:
         raise HTTPException(404, "User not found")
-    if user.role != models.UserRole.admin:
+    if user.role not in (models.UserRole.admin, models.UserRole.SUPER_ADMIN):
         raise HTTPException(403, "Admin role required")
     return user
 
@@ -249,10 +249,14 @@ def substitute_member(
 @router.get("/users")
 def list_users(user_id: int = Query(...), db: Session = Depends(get_db)):
     _require_admin(user_id, db)
-    users = db.query(models.User).filter(models.User.is_active == True).all()
+    # The user requested to ONLY show employees in the "Add Approver" list
+    users = db.query(models.User).join(
+        models.Employee, models.User.email == models.Employee.email
+    ).filter(models.User.is_active == True).all()
+    
     return [
         {
-            "id": u.id, "name": u.name, "email": u.email, "role": u.role, "company_id": u.company_id,
+            "id": u.id, "name": u.name or f"{u.firstName} {u.lastName}".strip(), "email": u.email, "role": u.role, "company_id": u.company_id,
             "ooo_until": u.ooo_until, "delegate_id": u.delegate_id,
         }
         for u in users

@@ -11,9 +11,13 @@ import enum
 # ─── Enums ────────────────────────────────────────────────────────────────────
 
 class UserRole(str, enum.Enum):
-    submitter = "submitter"
-    approver  = "approver"
-    admin     = "admin"
+    submitter   = "submitter"
+    approver    = "approver"
+    admin       = "admin"
+    SUPER_ADMIN = "SUPER_ADMIN"
+    VENDOR      = "VENDOR"
+    EMPLOYEE    = "EMPLOYEE"
+    PURCHASE_DEPT = "PURCHASE_DEPT"
 
 class WorkflowType(str, enum.Enum):
     approval        = "approval"
@@ -54,26 +58,28 @@ class NotificationChannel(str, enum.Enum):
 class User(Base):
     __tablename__ = "user_details"
 
-    id               = Column("userId", Integer, primary_key=True, index=True)
-    super_admin_id   = Column("super_admin_id", Integer, ForeignKey("user_details.userId"), nullable=True)
+    id               = Column("user_id", Integer, primary_key=True, index=True)
+    super_admin_id   = Column("super_admin_id", Integer, ForeignKey("user_details.user_id"), nullable=True)
     email            = Column(String(150), unique=True, nullable=False, index=True)
     password         = Column("password", String(255), nullable=False)
-    firstName        = Column("firstName", String(100))
-    lastName         = Column("lastName", String(100))
-    phoneNumber      = Column("phoneNumber", String(50))
-    signupDate       = Column("signupDate", String(50))
+    firstName        = Column("first_name", String(100))
+    lastName         = Column("last_name", String(100))
+    phoneNumber      = Column("phone_number", String(50))
+    signupDate       = Column("signup_date", String(50))
     designation      = Column("designation", String(100))
-    onboardingStatus = Column("onboardingStatus", String(100))
-    onboardingToken  = Column("onboardingToken", String(255))
-    tokenExpiry      = Column("tokenExpiry", DateTime, nullable=True)
+    onboardingStatus = Column("onboarding_status", String(100))
+    onboardingToken  = Column("onboarding_token", String(255))
+    tokenExpiry      = Column("token_expiry", DateTime, nullable=True)
     role             = Column("user_type", SAEnum(UserRole), default=UserRole.submitter)
     company_id       = Column("company_id", Integer, nullable=True)
+    employee_code    = Column("employee_code", String(20), ForeignKey("employee.employee_code"), nullable=True)
+    dept_code        = Column("dept_code", String(20), ForeignKey("department.dept_code"), nullable=True)
     created_at       = Column("created_date", DateTime(timezone=True), server_default=func.now())
     updated_at       = Column("modified_date", DateTime(timezone=True), onupdate=func.now())
 
     is_active        = Column(Boolean, default=True)
     ooo_until        = Column(DateTime, nullable=True)
-    delegate_id      = Column(Integer, ForeignKey("user_details.userId"), nullable=True)
+    delegate_id      = Column(Integer, ForeignKey("user_details.user_id"), nullable=True)
 
     @property
     def name(self):
@@ -104,7 +110,7 @@ class ApproverGroupMember(Base):
 
     id       = Column(Integer, primary_key=True, index=True)
     group_id = Column(Integer, ForeignKey("approver_groups.id", ondelete="CASCADE"))
-    user_id  = Column(Integer, ForeignKey("user_details.userId", ondelete="CASCADE"))
+    user_id  = Column(Integer, ForeignKey("user_details.user_id", ondelete="CASCADE"))
     sequential_order = Column(Integer, default=0)
     # Notified like every other member, but their decision never counts
     # toward stage completion and never blocks the stage (see
@@ -153,7 +159,7 @@ class Workflow(Base):
     # template_utils.py for the formula grammar (arithmetic only, no calls).
     message_variables    = Column(JSON, nullable=True)
 
-    created_by_id        = Column(Integer, ForeignKey("user_details.userId"))
+    created_by_id        = Column(Integer, ForeignKey("user_details.user_id"))
     created_at           = Column(DateTime(timezone=True), server_default=func.now())
     updated_at           = Column(DateTime(timezone=True), onupdate=func.now())
 
@@ -173,7 +179,7 @@ class WorkflowStage(Base):
     workflow_id       = Column(Integer, ForeignKey("workflows.id", ondelete="CASCADE"))
     name              = Column(String(200), nullable=False)
     type              = Column(SAEnum(WorkflowType), nullable=False)
-    order             = Column(Integer, nullable=False)
+    order             = Column("stage_order", Integer, nullable=False)
     approver_group_id = Column(Integer, ForeignKey("approver_groups.id"))
     sla_hours         = Column(Integer, default=48)
     voting_rule       = Column(SAEnum(VotingRule), default=VotingRule.any)
@@ -216,7 +222,7 @@ class WorkflowRequest(Base):
     request_metadata = Column(JSON, nullable=True)
 
     workflow_id   = Column(Integer, ForeignKey("workflows.id"))
-    submitter_id  = Column(Integer, ForeignKey("user_details.userId"))
+    submitter_id  = Column(Integer, ForeignKey("user_details.user_id"))
     status        = Column(SAEnum(RequestStatus), default=RequestStatus.pending)
     current_stage = Column(Integer, default=0)
 
@@ -334,7 +340,7 @@ class ApprovalAction(Base):
 
     id               = Column(Integer, primary_key=True, index=True)
     request_stage_id = Column(Integer, ForeignKey("request_stages.id", ondelete="CASCADE"))
-    approver_id      = Column(Integer, ForeignKey("user_details.userId"))
+    approver_id      = Column(Integer, ForeignKey("user_details.user_id"))
     decision         = Column(SAEnum(ApprovalDecision), nullable=False)
     comment          = Column(Text)
     # Optional document uploaded alongside the approve/reject decision
@@ -342,7 +348,7 @@ class ApprovalAction(Base):
     # then referenced here by the client.
     document_name    = Column(String(300), nullable=True)
     document_url     = Column(String(500), nullable=True)
-    delegated_to_id  = Column(Integer, ForeignKey("user_details.userId"), nullable=True)
+    delegated_to_id  = Column(Integer, ForeignKey("user_details.user_id"), nullable=True)
     acted_at         = Column(DateTime(timezone=True), server_default=func.now())
 
     request_stage    = relationship("RequestStage", back_populates="actions")
@@ -359,7 +365,7 @@ class ActivityLog(Base):
 
     id          = Column(Integer, primary_key=True, index=True)
     request_id  = Column(Integer, ForeignKey("workflow_requests.id", ondelete="CASCADE"))
-    user_id     = Column(Integer, ForeignKey("user_details.userId"), nullable=True)
+    user_id     = Column(Integer, ForeignKey("user_details.user_id"), nullable=True)
     action      = Column(String(100), nullable=False)
     detail      = Column(Text)
     stage_order = Column(Integer, nullable=True)
@@ -395,7 +401,7 @@ class ScheduledMessage(Base):
 
     id                      = Column(Integer, primary_key=True, index=True)
     request_id              = Column(Integer, ForeignKey("workflow_requests.id", ondelete="CASCADE"))
-    sender_id               = Column(Integer, ForeignKey("user_details.userId"), nullable=True)
+    sender_id               = Column(Integer, ForeignKey("user_details.user_id"), nullable=True)
     to                       = Column(String(50), nullable=False)   # "submitter" | "current_approvers" | "custom"
     custom_emails           = Column(JSON, nullable=True)
     subject                 = Column(String(300), nullable=True)
@@ -423,7 +429,7 @@ class StandaloneMessage(Base):
     __tablename__ = "standalone_messages"
 
     id                      = Column(Integer, primary_key=True, index=True)
-    sender_id               = Column(Integer, ForeignKey("user_details.userId"), nullable=True)
+    sender_id               = Column(Integer, ForeignKey("user_details.user_id"), nullable=True)
     to_emails               = Column(JSON, nullable=False)   # list of email strings
     subject                 = Column(String(300), nullable=True)
     message                 = Column(Text, nullable=False)
@@ -436,3 +442,541 @@ class StandaloneMessage(Base):
     created_at              = Column(DateTime(timezone=True), server_default=func.now())
 
     sender = relationship("User")
+
+
+# --- BUDGET MODELS ---
+
+"""
+models.py — SQLAlchemy ORM models.
+"""
+
+from sqlalchemy import (
+    Column, String, Integer, SmallInteger, Date, DateTime, Text,
+    ForeignKey, UniqueConstraint, CheckConstraint, Index
+)
+from sqlalchemy.orm import DeclarativeBase, relationship
+from datetime import datetime
+
+
+
+# ── Organisation ──────────────────────────────────────────────────────────────
+class Organisation(Base):
+    __tablename__ = "organisation"
+
+    org_code      = Column(String(20),  primary_key=True)
+    name          = Column(String(120), nullable=False)
+    base_currency = Column(String(3),   nullable=False, default="INR")
+    fiscal_year   = Column(String(20),  nullable=False)
+
+    departments = relationship("Department", back_populates="organisation")
+
+
+# ── Department ────────────────────────────────────────────────────────────────
+class Department(Base):
+    __tablename__ = "department"
+    __table_args__ = (
+        UniqueConstraint("name", name="uq_department_name"),
+        UniqueConstraint("wbs",  name="uq_department_wbs"),
+    )
+
+    dept_code         = Column(String(20),  primary_key=True)
+    name              = Column(String(120), nullable=False)
+    org_code          = Column(String(20),  ForeignKey("organisation.org_code"), nullable=False)
+    wbs               = Column(String(20),  nullable=False)
+    head_employee_code = Column(String(20), ForeignKey("employee.employee_code"), nullable=True)
+
+    organisation = relationship("Organisation", back_populates="departments")
+    projects     = relationship("Project",      back_populates="department")
+    employees    = relationship("Employee",     back_populates="department",
+                                foreign_keys="Employee.dept_code")
+    head         = relationship("Employee",     foreign_keys=[head_employee_code])
+
+
+# ── Project ───────────────────────────────────────────────────────────────────
+class Project(Base):
+    __tablename__ = "project"
+    __table_args__ = (
+        UniqueConstraint("wbs", name="uq_project_wbs"),
+    )
+
+    project_code = Column(String(20),  primary_key=True)
+    name         = Column(String(120), nullable=False)
+    dept_code    = Column(String(20),  ForeignKey("department.dept_code"), nullable=False)
+    wbs          = Column(String(20),  nullable=False)
+
+    department = relationship("Department", back_populates="projects")
+    activities = relationship("Activity",   back_populates="project")
+
+
+# ── CostType ──────────────────────────────────────────────────────────────────
+class CostType(Base):
+    __tablename__ = "cost_type"
+    __table_args__ = (
+        UniqueConstraint("tag", name="uq_cost_type_tag"),
+    )
+
+    cost_type_code = Column(String(20),  primary_key=True)
+    name           = Column(String(120), nullable=False)
+    tag            = Column(String(20),  nullable=False)
+
+    activities     = relationship("Activity",    back_populates="cost_type")
+    sub_activities = relationship("SubActivity", back_populates="cost_type")
+
+
+# ── Status ────────────────────────────────────────────────────────────────────
+class Status(Base):
+    __tablename__ = "status"
+    __table_args__ = (
+        UniqueConstraint("name", name="uq_status_name"),
+    )
+
+    status_code = Column(String(20), primary_key=True)
+    name        = Column(String(60), nullable=False)
+    sort_order  = Column(Integer,    nullable=False, default=0)
+
+    activities     = relationship("Activity",    back_populates="status")
+    sub_activities = relationship("SubActivity", back_populates="status")
+
+
+# ── Employee ──────────────────────────────────────────────────────────────────
+class Employee(Base):
+    __tablename__ = "employee"
+    __table_args__ = (
+        UniqueConstraint("name", name="uq_employee_name"),
+    )
+
+    employee_code = Column(String(20),  primary_key=True)
+    name          = Column(String(120), nullable=False)
+    title         = Column(String(120))
+    email         = Column(String(120), nullable=True)
+    user_id       = Column("user_id", Integer, ForeignKey("user_details.user_id"), nullable=True)
+    dept_code     = Column(String(20),  ForeignKey("department.dept_code"))
+    manager_code  = Column(String(20),  ForeignKey("employee.employee_code"))
+
+    department     = relationship("Department", back_populates="employees",
+                                  foreign_keys=[dept_code])
+    manager        = relationship("Employee",   remote_side="Employee.employee_code",
+                                  foreign_keys=[manager_code], overlaps="direct_reports")
+    direct_reports = relationship("Employee",   foreign_keys=[manager_code],
+                                  overlaps="manager")
+    activities     = relationship("Activity",    back_populates="employee")
+    sub_activities = relationship("SubActivity", back_populates="employee")
+
+
+# ── Activity ──────────────────────────────────────────────────────────────────
+class Activity(Base):
+    __tablename__ = "activity"
+    __table_args__ = (
+        UniqueConstraint("wbs", name="uq_activity_wbs"),
+        CheckConstraint("is_leaf IN (0,1)", name="ck_activity_leaf"),
+    )
+
+    activity_code  = Column(String(20),  primary_key=True)
+    name           = Column(String(120), nullable=False)
+    project_code   = Column(String(20),  ForeignKey("project.project_code"),     nullable=False)
+    cost_type_code = Column(String(20),  ForeignKey("cost_type.cost_type_code"), nullable=True)
+    employee_code  = Column(String(20),  ForeignKey("employee.employee_code"),   nullable=True)
+    status_code    = Column(String(20),  ForeignKey("status.status_code"),       nullable=True)
+    wbs            = Column(String(20),  nullable=False)
+    is_leaf        = Column(SmallInteger, nullable=False, default=1)
+
+    # annual totals (kept in sync with phase rows)
+    allocated = Column(Integer, nullable=False, default=0)
+    pr        = Column(Integer, nullable=False, default=0)
+    po        = Column(Integer, nullable=False, default=0)
+    invoiced  = Column(Integer, nullable=False, default=0)
+
+    # board-approved total (separate from phased allocation)
+    approved  = Column(Integer, nullable=False, default=0)
+
+    project        = relationship("Project",   back_populates="activities")
+    cost_type      = relationship("CostType",  back_populates="activities")
+    employee       = relationship("Employee",  back_populates="activities")
+    status         = relationship("Status",    back_populates="activities")
+    sub_activities = relationship("SubActivity", back_populates="parent_activity",
+                                  cascade="all, delete-orphan")
+    phases         = relationship("ActivityPhase", back_populates="activity",
+                                  cascade="all, delete-orphan",
+                                  order_by="ActivityPhase.period_no")
+
+
+# ── ActivityPhase — monthly phasing for an activity ───────────────────────────
+class ActivityPhase(Base):
+    __tablename__ = "activity_phase"
+    __table_args__ = (
+        UniqueConstraint("activity_code", "period_no", name="uq_activity_phase"),
+    )
+
+    id            = Column(Integer,    primary_key=True, autoincrement=True)
+    activity_code = Column(String(20), ForeignKey("activity.activity_code", ondelete="CASCADE"), nullable=False)
+    period_no     = Column(Integer,    nullable=False)   # 1–12
+    alloc         = Column(Integer,    nullable=False, default=0)
+    pr            = Column(Integer,    nullable=False, default=0)
+    po            = Column(Integer,    nullable=False, default=0)
+    cons          = Column(Integer,    nullable=False, default=0)  # consumed / actuals
+
+    activity = relationship("Activity", back_populates="phases")
+
+
+# ── SubActivity ───────────────────────────────────────────────────────────────
+class SubActivity(Base):
+    __tablename__ = "sub_activity"
+    __table_args__ = (
+        UniqueConstraint("wbs", name="uq_sub_activity_wbs"),
+        CheckConstraint("is_leaf IN (0,1)", name="ck_sub_activity_leaf"),
+        CheckConstraint("level BETWEEN 1 AND 3", name="ck_sub_activity_lvl"),
+    )
+
+    subactivity_code     = Column(String(20),  primary_key=True)
+    name                 = Column(String(120), nullable=False)
+    parent_activity_code = Column(String(20),  ForeignKey("activity.activity_code"),   nullable=False)
+    level                = Column(Integer,     nullable=False)
+    cost_type_code       = Column(String(20),  ForeignKey("cost_type.cost_type_code"), nullable=True)
+    employee_code        = Column(String(20),  ForeignKey("employee.employee_code"),   nullable=True)
+    status_code          = Column(String(20),  ForeignKey("status.status_code"),       nullable=True)
+    wbs                  = Column(String(20),  nullable=False)
+    is_leaf              = Column(SmallInteger, nullable=False, default=1)
+
+    allocated = Column(Integer, nullable=False, default=0)
+    pr        = Column(Integer, nullable=False, default=0)
+    po        = Column(Integer, nullable=False, default=0)
+    invoiced  = Column(Integer, nullable=False, default=0)
+    approved  = Column(Integer, nullable=False, default=0)
+
+    parent_activity = relationship("Activity",  back_populates="sub_activities")
+    cost_type       = relationship("CostType",  back_populates="sub_activities")
+    employee        = relationship("Employee",  back_populates="sub_activities")
+    status          = relationship("Status",    back_populates="sub_activities")
+    phases          = relationship("SubActivityPhase", back_populates="sub_activity",
+                                   cascade="all, delete-orphan",
+                                   order_by="SubActivityPhase.period_no")
+
+
+# ── SubActivityPhase ──────────────────────────────────────────────────────────
+class SubActivityPhase(Base):
+    __tablename__ = "sub_activity_phase"
+    __table_args__ = (
+        UniqueConstraint("subactivity_code", "period_no", name="uq_sub_activity_phase"),
+    )
+
+    id               = Column(Integer,    primary_key=True, autoincrement=True)
+    subactivity_code = Column(String(20), ForeignKey("sub_activity.subactivity_code", ondelete="CASCADE"), nullable=False)
+    period_no        = Column(Integer,    nullable=False)
+    alloc            = Column(Integer,    nullable=False, default=0)
+    pr               = Column(Integer,    nullable=False, default=0)
+    po               = Column(Integer,    nullable=False, default=0)
+    cons             = Column(Integer,    nullable=False, default=0)
+
+    sub_activity = relationship("SubActivity", back_populates="phases")
+
+
+# ── BudgetVersion ─────────────────────────────────────────────────────────────
+class BudgetVersion(Base):
+    __tablename__ = "budget_version"
+    __table_args__ = (
+        CheckConstraint("is_current IN (0,1)", name="ck_version_current"),
+        CheckConstraint("is_locked  IN (0,1)", name="ck_version_locked"),
+    )
+
+    version_code = Column(String(20),  primary_key=True)
+    name         = Column(String(120), nullable=False)
+    fiscal_year  = Column(String(20),  nullable=True)
+    created_date = Column(Date,        nullable=False)
+    basis        = Column(String(200))
+    is_current   = Column(SmallInteger, nullable=False, default=0)
+    is_locked    = Column(SmallInteger, nullable=False, default=0)
+
+
+# ── FiscalPeriod ──────────────────────────────────────────────────────────────
+class FiscalPeriod(Base):
+    __tablename__ = "fiscal_period"
+    __table_args__ = (
+        UniqueConstraint("period_code", name="uq_fiscal_period_code"),
+        CheckConstraint("quarter IN ('Q1','Q2','Q3','Q4')", name="ck_fiscal_quarter"),
+        CheckConstraint("state IN ('Open','Current','Closed')", name="ck_fiscal_state"),
+    )
+
+    period_no   = Column(Integer,    primary_key=True)
+    period_code = Column(String(10), nullable=False)
+    quarter     = Column(String(2),  nullable=False)
+    month       = Column(String(20), nullable=False)
+    state       = Column(String(10), nullable=False)
+    fiscal_year = Column(String(20), nullable=False)
+
+
+# ── Transfer ──────────────────────────────────────────────────────────────────
+class Transfer(Base):
+    __tablename__ = "transfer"
+
+    id            = Column(String(20),  primary_key=True)
+    transfer_type = Column(String(20),  nullable=False)
+    from_code     = Column(String(20),  nullable=False)
+    to_code       = Column(String(20),  nullable=False)
+    amount        = Column(Integer,     nullable=False)
+    employee_code = Column(String(20),  ForeignKey("employee.employee_code"), nullable=True)
+    note          = Column(String(300))
+    transfer_date = Column(Date,        nullable=False)
+    status        = Column(String(20),  nullable=False, default="Approved")
+
+
+# ── ChangeRequest ─────────────────────────────────────────────────────────────
+# Persists the governed change-request workflow (months / carry / pull / transfer)
+# raised from the Budget Book / Dashboard / Line Drawer. Distinct from Transfer
+# (which is immediate, legacy, annual-total-only). A ChangeRequest stays
+# "Pending" until Finance approves or rejects it; approval is what actually
+# moves money — see /api/change-requests/{id}/decide in main.py.
+class ChangeRequest(Base):
+    __tablename__ = "change_request"
+    __table_args__ = (
+        CheckConstraint("request_type IN ('months','carry','pull','transfer')", name="ck_cr_type"),
+        CheckConstraint("status IN ('Pending','Approved','Rejected')", name="ck_cr_status"),
+    )
+
+    id              = Column(String(20),  primary_key=True)
+    request_type    = Column(String(20),  nullable=False)
+    a_code          = Column(String(20),  nullable=False)   # source activity_code
+    b_code          = Column(String(20),  nullable=True)    # target activity_code (transfer only)
+    period_from     = Column(Integer,     nullable=False)   # 1-12
+    period_to       = Column(Integer,     nullable=False)   # 1-12 (== period_from for transfer)
+    amount          = Column(Integer,     nullable=False)
+    reason          = Column(String(500))
+    requested_by    = Column(String(20),  ForeignKey("employee.employee_code"), nullable=True)
+    decided_by      = Column(String(20),  ForeignKey("employee.employee_code"), nullable=True)
+    status          = Column(String(20),  nullable=False, default="Pending")
+    created_at      = Column(DateTime,    nullable=False, default=datetime.utcnow)
+    decided_at      = Column(DateTime,    nullable=True)
+
+
+# ── BudgetUpload ──────────────────────────────────────────────────────────────
+# A department's Excel upload is STAGED, not applied immediately. It sits as
+# "Pending" until that department's head approves or rejects it. Approval marks
+# the department complete for that fiscal-year cycle; rows are merged into
+# Activity only once every department has approved.
+class BudgetUpload(Base):
+    __tablename__ = "budget_upload"
+    __table_args__ = (
+        CheckConstraint("status IN ('Pending','Approved','Rejected')", name="ck_upload_status"),
+    )
+
+    id            = Column(String(20),  primary_key=True)
+    filename      = Column(String(255), nullable=False)
+    fiscal_year   = Column(String(20),  nullable=True)
+    dept_code     = Column(String(20),  ForeignKey("department.dept_code"), nullable=True)
+    status        = Column(String(20),  nullable=False, default="Pending")
+    staged_rows   = Column(Text,        nullable=True)   # JSON — validated rows awaiting approval
+    rows_inserted = Column(Integer,     nullable=False, default=0)  # preview until approved, actual after
+    rows_updated  = Column(Integer,     nullable=False, default=0)
+    rows_skipped  = Column(Integer,     nullable=False, default=0)
+    requested_by  = Column(String(20),  ForeignKey("employee.employee_code"), nullable=True)
+    decided_by    = Column(String(20),  ForeignKey("employee.employee_code"), nullable=True)
+    uploaded_at   = Column(DateTime,    nullable=False, default=datetime.utcnow)
+    decided_at    = Column(DateTime,    nullable=True)
+    merged_at     = Column(DateTime,    nullable=True)
+    notes         = Column(Text)
+
+    department    = relationship("Department", foreign_keys=[dept_code])
+
+class VendorMaster(Base):
+    __tablename__ = "vendor_master"
+    
+    vendor_id = Column(Integer, primary_key=True, index=True)
+    bp_no = Column(String(255), unique=True)
+    name = Column(String(255))
+    gst_number = Column(String(255))
+    pan = Column(String(255))
+    company_code = Column(String(255))
+    email = Column(String(255), nullable=True)          # vendor login email
+    city_name = Column(String(255), nullable=True)      # city
+    sap_created_on = Column(Date)
+    sap_changed_on = Column(Date)
+    sys_created_date = Column(DateTime)
+    sys_modified_date = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    addresses = relationship("VendorAddress", back_populates="vendor")
+
+class VendorAddress(Base):
+    __tablename__ = "vendor_address"
+
+    vendor_address_id = Column(Integer, primary_key=True, index=True)
+    address_id = Column(String(255), unique=True, index=True)
+    address_type = Column(String(255))
+    city_name = Column(String(255))
+    country = Column(String(255))
+    created_date = Column(DateTime, default=datetime.utcnow)
+    is_default = Column(Boolean, default=False)
+    modified_date = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    postal_code = Column(String(255))
+    street_and_house_number = Column(String(255))
+    street_name_1 = Column(String(255))
+    vendor_id = Column(Integer, ForeignKey("vendor_master.vendor_id"), index=True)
+
+    vendor = relationship("VendorMaster", back_populates="addresses")
+
+from sqlalchemy import BigInteger, Numeric
+
+class PurchaseOrder(Base):
+    __tablename__ = "purchase_orders"
+    id = Column(BigInteger, primary_key=True, index=True)
+    po_number = Column(String(50), index=True)
+    vendor_id = Column(BigInteger)
+    vendor_name = Column(String(255))
+    company_code = Column(String(20))
+    company_name = Column(String(200))
+    po_type = Column(String(50))
+    currency = Column(String(20))
+    total_value = Column(Numeric(15, 2))
+    net_value = Column(Numeric(15, 2))
+    status = Column(String(50))
+    created_date = Column(DateTime)
+
+class PurchaseRequisition(Base):
+    __tablename__ = "purchase_requisitions"
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    pr_number = Column(String(50), unique=True, nullable=False)
+    location_id = Column(BigInteger, nullable=False)
+    requested_by = Column(BigInteger, nullable=False)
+    required_date = Column(Date)
+    remarks = Column(Text)
+    status = Column(String(50)) # CREATED, RELEASED, PARTIALLY_RELEASED
+    total_amount = Column(Numeric(15, 2))
+    created_at = Column(DateTime)
+    updated_at = Column(DateTime)
+
+class PurchaseRequisitionItem(Base):
+    __tablename__ = "purchase_requisition_items"
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    purchase_requisition_id = Column(BigInteger, nullable=False)
+    material_id = Column(BigInteger, nullable=False)
+    sku = Column(String(255))
+    quantity = Column(Numeric(19, 2))
+    uom = Column(String(50))
+    estimated_price = Column(Numeric(15, 2))
+    total_price = Column(Numeric(15, 2))
+    status = Column(String(50)) # CREATED, RELEASED
+
+class PurchaseRequisitionItemVendor(Base):
+    __tablename__ = "purchase_requisition_item_vendors"
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    purchase_requisition_item_id = Column(BigInteger, nullable=False)
+    vendor_id = Column(BigInteger, nullable=False)
+    status = Column(String(50)) # SENT, ACCEPTED, REJECTED
+    sent_at = Column(DateTime)
+    bp_no = Column(String(255), nullable=True)
+
+class VendorQuotation(Base):
+    __tablename__ = "vendor_quotations"
+    quotation_id = Column(BigInteger, primary_key=True, autoincrement=True)
+    pr_id = Column(BigInteger, nullable=False)
+    vendor_id = Column(BigInteger, nullable=False)
+    quotation_number = Column(String(255), nullable=False, unique=True)
+    quotation_date = Column(Date)
+    status = Column(String(255))
+    currency = Column(String(255))
+    subtotal_amount = Column(Numeric(38, 2))
+    gst_total_amount = Column(Numeric(38, 2))
+    freight_amount = Column(Numeric(38, 2))
+    grand_total_amount = Column(Numeric(38, 2))
+    valid_until = Column(Date)
+    created_date = Column(DateTime)
+    modified_date = Column(DateTime)
+    bp_no = Column(String(50))
+    
+class VendorQuotationItem(Base):
+    __tablename__ = "vendor_quotation_items"
+    quotation_item_id = Column(BigInteger, primary_key=True, autoincrement=True)
+    quotation_id = Column(BigInteger, nullable=False)
+    pr_line_id = Column(BigInteger, nullable=False)
+    item_code = Column(String(255))
+    description = Column(Text)
+    pr_qty = Column(Numeric(38, 2))
+    quoted_qty = Column(Numeric(38, 2))
+    uom = Column(String(255))
+    unit_price = Column(Numeric(38, 2))
+    gst_percent = Column(Numeric(38, 2))
+    gst_amount = Column(Numeric(38, 2))
+    freight_amount = Column(Numeric(38, 2))
+    line_total = Column(Numeric(38, 2))
+    delivery_date = Column(Date)
+    
+class VendorQuotationDocument(Base):
+    __tablename__ = "vendor_quotation_documents"
+    document_id = Column(Integer, primary_key=True, autoincrement=True)
+    vendor_quotation_id = Column(BigInteger)
+    file_path = Column(String(500))
+    file_name = Column(String(255))
+
+class PortalPurchaseOrder(Base):
+    __tablename__ = "portal_purchase_orders"
+    id = Column(BigInteger, primary_key=True, index=True)
+    pr_id = Column(BigInteger)
+    quotation_id = Column(BigInteger)
+    po_number = Column(String(50), index=True)
+    po_date = Column(DateTime)
+    vendor_id = Column(BigInteger)
+    vendor_name = Column(String(255))
+    company_code = Column(String(20))
+    company_name = Column(String(200))
+    po_type = Column(String(50))
+    currency = Column(String(20))
+    grand_total = Column(Numeric(15, 2))
+    status = Column(String(50))
+    requested_delivery_date = Column(Date)
+    confirmed_delivery_date = Column(Date)
+
+class PortalPurchaseOrderItem(Base):
+    __tablename__ = "portal_purchase_order_items"
+    id = Column(BigInteger, primary_key=True, index=True)
+    po_id = Column(BigInteger, ForeignKey("portal_purchase_orders.id"))
+    line_number = Column(Integer)
+    material_number = Column(String(100))
+    material_description = Column(String(500))
+    quantity = Column(Numeric(15, 2))
+    uom = Column(String(20))
+    unit_price = Column(Numeric(15, 2))
+    net_value = Column(Numeric(15, 2))
+    tax_percent = Column(Numeric(10, 2))
+    tax_amount = Column(Numeric(15, 2))
+    total_value = Column(Numeric(15, 2))
+
+
+class PortalASN(Base):
+    __tablename__ = "portal_asns"
+    id = Column(BigInteger, primary_key=True, index=True)
+    asn_number = Column(String(50), unique=True, index=True) # ASN-YYYY-XXXX
+    po_id = Column(String(100), index=True) # Using String to handle poNumber or poId flexibly
+    vendor_bpno = Column(String(100))
+    invoice_number = Column(String(100))
+    irn = Column(String(100))
+    eway_bill = Column(String(100))
+    ewb_valid_to = Column(String(100))
+    vehicle_number = Column(String(100))
+    transporter_code = Column(String(100))
+    lr_number = Column(String(100))
+    dispatch_date = Column(String(100))
+    expected_delivery = Column(String(100))
+    packaging = Column(String(100))
+    
+    # Files
+    tax_invoice_file = Column(String(255))
+    eway_bill_file = Column(String(255))
+    packing_list_file = Column(String(255))
+    pdir_file = Column(String(255))
+    deviation_file = Column(String(255))
+    
+    status = Column(String(50), default="IN_TRANSIT")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    items = relationship("PortalASNItem", back_populates="asn")
+
+
+class PortalASNItem(Base):
+    __tablename__ = "portal_asn_items"
+    id = Column(BigInteger, primary_key=True, index=True)
+    asn_id = Column(BigInteger, ForeignKey("portal_asns.id"))
+    line_number = Column(Integer)
+    part_number = Column(String(100))
+    quantity_shipped = Column(Numeric(15, 2))
+    batch_heat_number = Column(String(100), nullable=True)
+
+    asn = relationship("PortalASN", back_populates="items")
+
