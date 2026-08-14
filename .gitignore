@@ -104,7 +104,6 @@ query_*.py
 add_*.py
 scratch.py
 missing_schemas.py
-workflow_snapshot.py
 get_error.py
 count_vendors.py
 
