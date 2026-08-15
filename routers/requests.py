@@ -261,7 +261,7 @@ def list_requests(
     db: Session = Depends(get_db),
 ):
     current_user = _get_user_or_404(user_id, db)
-    if current_user.role == models.UserRole.admin:
+    if models.is_admin_role(current_user.role):
         q = db.query(models.WorkflowRequest)
         if status:
             q = q.filter(models.WorkflowRequest.status == status)
@@ -330,7 +330,7 @@ def get_request(
     if not req:
         raise HTTPException(404, "Request not found")
 
-    if current_user.role == models.UserRole.admin or req.submitter_id == current_user.id:
+    if models.is_admin_role(current_user.role) or req.submitter_id == current_user.id:
         return req
 
     approver_group_ids = [
@@ -377,7 +377,7 @@ def cancel_request(
     req = db.query(models.WorkflowRequest).filter(models.WorkflowRequest.id == req_id).first()
     if not req:
         raise HTTPException(404, "Request not found")
-    if req.submitter_id != current_user.id and current_user.role != models.UserRole.admin:
+    if req.submitter_id != current_user.id and not models.is_admin_role(current_user.role):
         raise HTTPException(403, "Access denied")
     if req.status not in (models.RequestStatus.pending,):
         raise HTTPException(400, f"Cannot cancel a request with status '{req.status.value}'")
@@ -573,12 +573,12 @@ def take_action_by_user(
         }
         next_member = next_sequential_member(stage_cfg, acted_user_ids)
         if not next_member or next_member["user_id"] != current_user.id:
-            if current_user.role != models.UserRole.admin:
+            if not models.is_admin_role(current_user.role):
                 raise HTTPException(403, "It is not your turn to approve in this sequential stage")
 
     # Verify the user belongs to the approver group for this stage (per the
     # frozen stage_cfg)
-    if current_user.role not in (models.UserRole.admin,):
+    if not models.is_admin_role(current_user.role):
         if current_user.id not in members_by_id:
             raise HTTPException(403, "You are not in the approver group for this stage")
 
@@ -727,7 +727,7 @@ def send_message(
 
     # Same access rule as GET /{req_id}: submitter, admin, or a member of an
     # approver group attached to this request's workflow.
-    if current_user.role != models.UserRole.admin and req.submitter_id != current_user.id:
+    if not models.is_admin_role(current_user.role) and req.submitter_id != current_user.id:
         approver_group_ids = [
             ws.approver_group_id
             for ws in db.query(models.WorkflowStage)

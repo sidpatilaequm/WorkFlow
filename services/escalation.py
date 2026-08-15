@@ -96,7 +96,7 @@ def run_escalation_check(db=None) -> None:
             logger.info("Escalated %d request(s): %s", len(escalated_request_ids), escalated_request_ids)
             admins = (
                 db.query(models.User)
-                .filter(models.User.role == models.UserRole.admin, models.User.is_active == True)
+                .filter(models.User.role.in_([models.UserRole.admin, models.UserRole.SUPER_ADMIN]), models.User.is_active == True)
                 .all()
             )
             admin_emails = [u.email for u in admins]

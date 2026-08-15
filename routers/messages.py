@@ -96,7 +96,7 @@ def list_standalone_messages(
     """List standalone messages. Admins see all; others see their own."""
     current_user = _get_user_or_404(user_id, db)
     q = db.query(models.StandaloneMessage)
-    if current_user.role != models.UserRole.admin:
+    if not models.is_admin_role(current_user.role):
         q = q.filter(models.StandaloneMessage.sender_id == current_user.id)
     if active_only:
         q = q.filter(models.StandaloneMessage.is_active == True)
@@ -116,7 +116,7 @@ def deactivate_standalone_message(
     ).first()
     if not msg:
         raise HTTPException(404, "Message not found")
-    if msg.sender_id != current_user.id and current_user.role != models.UserRole.admin:
+    if msg.sender_id != current_user.id and not models.is_admin_role(current_user.role):
         raise HTTPException(403, "Access denied")
     msg.is_active = False
     db.commit()

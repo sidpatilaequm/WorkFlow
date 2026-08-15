@@ -22,6 +22,27 @@ def _run_async(coro):
 router = APIRouter()
 
 
+def _fire_approval_webhook(event: str, req: models.WorkflowRequest):
+    """Fire an outbound webhook (e.g. to backend_java) on final request resolution.
+
+    Opens its own DB session inside the background thread rather than reusing
+    the caller's request-scoped `db` — that session may still be mid-commit on
+    the main thread when this runs, and SQLAlchemy sessions aren't safe to
+    share across threads.
+    """
+    from database import SessionLocal
+    import webhook_utils
+
+    async def _do():
+        session = SessionLocal()
+        try:
+            await webhook_utils.fire_webhook(session, event, req)
+        finally:
+            session.close()
+
+    _run_async(_do())
+
+
 def _advance_request(db: Session, req: models.WorkflowRequest):
     """Move request to next stage (or parallel group) or mark final status.
 
@@ -96,6 +117,7 @@ def _advance_request(db: Session, req: models.WorkflowRequest):
             req.status = models.RequestStatus.approved
             req.resolved_at = now
             _fire_completion_notification(db, req)
+            _fire_approval_webhook("request.approved", req)
             return
 
         next_stage_cfg = get_stage_config(db, req, next_stage.stage_order, next_stage.stage_id)
@@ -324,6 +346,7 @@ def _check_stage_completion(db: Session, request_stage: models.RequestStage, req
             request_stage.status = models.RequestStatus.rejected
             req.status = models.RequestStatus.rejected
             req.resolved_at = now
+            _fire_approval_webhook("request.rejected", req)
             return
         elif behavior == models.RejectionBehavior.restart:
             for rs in req.stages:
@@ -358,6 +381,7 @@ def _check_stage_completion(db: Session, request_stage: models.RequestStage, req
                 request_stage.status = models.RequestStatus.rejected
                 req.status = models.RequestStatus.rejected
                 req.resolved_at = now
+                _fire_approval_webhook("request.rejected", req)
                 return
             # Sequential completes only when ALL required members have approved
             if approved_count >= group_members:
@@ -411,7 +435,7 @@ def take_action(
     # req.current_stage=1). Always search all started-pending stages for a
     # stage this user is actually a member of, even when a stage at
     # req.current_stage was found (it may belong to a different approver).
-    if current_user.role not in (models.UserRole.admin,):
+    if not models.is_admin_role(current_user.role):
         started_pending = (
             db.query(models.RequestStage)
             .filter(
@@ -502,14 +526,14 @@ def take_action(
         }
         next_member = next_sequential_member(stage_cfg, acted_user_ids)
         if not next_member or next_member["user_id"] != current_user.id:
-            if current_user.role != models.UserRole.admin:
+            if not models.is_admin_role(current_user.role):
                 raise HTTPException(403, "It is not your turn to approve in this sequential stage")
 
     # Verify approver is in the group (per the frozen stage_cfg) — or is
     # standing in as an OOO member's delegate
     acting_for_id = None
     ooo_principal = None
-    if current_user.role not in (models.UserRole.admin,):
+    if not models.is_admin_role(current_user.role):
         if current_user.id not in members_by_id:
             now_check = datetime.utcnow()
             ooo_principal = (
@@ -590,7 +614,7 @@ def my_pending(user_id: int = Query(...), db: Session = Depends(get_db)):
     if not current_user:
         raise HTTPException(404, "User not found")
 
-    if current_user.role == models.UserRole.admin:
+    if models.is_admin_role(current_user.role):
         pending_requests = (
             db.query(models.WorkflowRequest.id)
             .filter(models.WorkflowRequest.status == models.RequestStatus.pending)

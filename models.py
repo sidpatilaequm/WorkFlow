@@ -19,6 +19,16 @@ class UserRole(str, enum.Enum):
     EMPLOYEE    = "EMPLOYEE"
     PURCHASE_DEPT = "PURCHASE_DEPT"
 
+
+def is_admin_role(role) -> bool:
+    """True for roles that should see/manage every request, not just their own.
+
+    Two distinct values mean "admin" here because `role` mirrors the synced
+    `user_details.user_type` column, whose backend_java enum never actually
+    produces the literal "admin" — real admin accounts arrive as SUPER_ADMIN.
+    """
+    return role in (UserRole.admin, UserRole.SUPER_ADMIN)
+
 class WorkflowType(str, enum.Enum):
     approval        = "approval"
     review          = "review"
