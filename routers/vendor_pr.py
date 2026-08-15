@@ -1,5 +1,8 @@
+# pyrefly: ignore [missing-import]
 from fastapi import APIRouter, Depends, Header, Query, HTTPException
+# pyrefly: ignore [missing-import]
 from sqlalchemy.orm import Session
+# pyrefly: ignore [missing-import]
 from sqlalchemy import text, or_
 from collections import defaultdict
 from database import get_db
@@ -9,29 +12,33 @@ router = APIRouter(prefix="/api/vendor", tags=["Vendor Portal (Mock)"])
 
 @router.get("/create-pr-options")
 def get_create_pr_options(db: Session = Depends(get_db)):
-    """
-    Returns options needed to create a Purchase Requisition.
-    NOTE: Vendors are NOT returned here anymore — vendor assignment
-    now happens via RFQ AFTER the PR is approved by the workflow engine.
-    """
-    locations = db.execute(text("SELECT location_id, location_name, city, state, country, is_active FROM location")).fetchall()
-    loc_data = [{"id": r[0], "locationId": r[0], "locationName": r[1], "city": r[2], "state": r[3], "country": r[4], "isActive": r[5]} for r in locations]
-
-    materials = db.execute(text("SELECT material_id, material_code, description, base_unit_of_measure, price FROM material")).fetchall()
-    mat_data = [{"id": r[0], "materialId": r[0], "materialCode": r[1], "sku": r[1], "description": r[2], "name": r[2], "baseUnit": r[3], "uom": r[3], "unitPrice": r[4]} for r in materials]
-
-    # Also return departments for the requester dropdown
     try:
-        depts = db.execute(text("SELECT dept_code, dept_name FROM department ORDER BY dept_name")).fetchall()
-        dept_data = [{"deptCode": r[0], "deptName": r[1]} for r in depts]
-    except Exception:
-        dept_data = []
+        locations = db.execute(text("SELECT location_id, location_name, city, state, country, is_active FROM location")).fetchall()
+        
+        def parse_bit(b):
+            if isinstance(b, bytes):
+                return b != b'\x00'
+            return bool(b)
+            
+        loc_data = [{"id": r[0], "locationId": r[0], "locationName": r[1], "city": r[2], "state": r[3], "country": r[4], "isActive": parse_bit(r[5])} for r in locations]
 
-    return {
-        "locations": loc_data,
-        "materials": mat_data,
-        "departments": dept_data
-    }
+        materials = db.execute(text("SELECT material_id, material_code, description, base_unit_of_measure, price FROM material")).fetchall()
+        mat_data = [{"id": r[0], "materialId": r[0], "materialCode": r[1], "sku": r[1], "description": r[2], "name": r[2], "baseUnit": r[3], "uom": r[3], "unitPrice": r[4]} for r in materials]
+
+        # Also return departments for the requester dropdown
+        try:
+            depts = db.execute(text("SELECT dept_code, dept_name FROM department ORDER BY dept_name")).fetchall()
+            dept_data = [{"deptCode": r[0], "deptName": r[1]} for r in depts]
+        except Exception:
+            dept_data = []
+
+        return {
+            "locations": loc_data,
+            "materials": mat_data,
+            "departments": dept_data
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/purchase-requisition")
 @router.get("/purchase-requisitions")
@@ -211,6 +218,7 @@ def get_purchase_requisitions_details(
     )
     return {"content": result.get("prs", [])}
 
+# pyrefly: ignore [missing-import]
 from pydantic import BaseModel
 from typing import Optional
 
@@ -218,6 +226,7 @@ class VendorActionBody(BaseModel):
     vendor_id: Optional[int] = None
     vendor_code: Optional[str] = None
 
+# pyrefly: ignore [missing-import]
 from pydantic import BaseModel
 from typing import List
 
@@ -230,80 +239,83 @@ def create_rfq(
     body: CreateRfqBody,
     db: Session = Depends(get_db)
 ):
-    # Find the PR ID
-    pr_record = db.execute(
-        text("SELECT id FROM purchase_requisitions WHERE pr_number = :pr_id"),
-        {"pr_id": pr_id}
-    ).fetchone()
-    
-    if not pr_record:
-        raise HTTPException(status_code=404, detail="PR not found")
-        
-    actual_pr_id = pr_record[0]
-    
-    # Generate RFQ Number
-    rfq_number = f"RFQ-{pr_id.replace('PR-', '')}"
-    
-    # Check if RFQ already exists
-    existing = db.execute(
-        text("SELECT rfq_id FROM rfq WHERE pr_id = :pr_id"),
-        {"pr_id": actual_pr_id}
-    ).fetchone()
-    
-    if not existing:
-        db.execute(
-            text("""
-            INSERT INTO rfq (rfq_number, status, pr_id, created_at)
-            VALUES (:rfq_num, 'SENT', :pr_id, NOW())
-            """),
-            {"rfq_num": rfq_number, "pr_id": actual_pr_id}
-        )
-        db.commit()
-        rfq_id = db.execute(text("SELECT LAST_INSERT_ID()")).scalar()
-    else:
-        rfq_id = existing[0]
-
-    # Insert vendors
-    for vendor_id in body.vendor_ids:
-        # Check if already assigned
-        v_exist = db.execute(
-            text("SELECT id FROM rfq_vendors WHERE rfq_id = :rfq AND vendor_id = :vid"),
-            {"rfq": rfq_id, "vid": vendor_id}
+    try:
+        # Find the PR ID
+        pr_record = db.execute(
+            text("SELECT id FROM purchase_requisitions WHERE pr_number = :pr_id"),
+            {"pr_id": pr_id}
         ).fetchone()
         
-        if not v_exist:
+        if not pr_record:
+            raise HTTPException(status_code=404, detail="PR not found")
+            
+        actual_pr_id = pr_record[0]
+        
+        # Generate RFQ Number
+        rfq_number = f"RFQ-{pr_id.replace('PR-', '')}"
+        
+        # Check if RFQ already exists
+        existing = db.execute(
+            text("SELECT rfq_id FROM rfq WHERE pr_id = :pr_id"),
+            {"pr_id": actual_pr_id}
+        ).fetchone()
+        
+        if not existing:
             db.execute(
                 text("""
-                INSERT INTO rfq_vendors (rfq_id, vendor_id, status, sent_at)
-                VALUES (:rfq, :vid, 'PENDING', NOW())
+                INSERT INTO rfq (rfq_number, status, pr_id, created_at)
+                VALUES (:rfq_num, 'SENT', :pr_id, NOW())
                 """),
-                {"rfq": rfq_id, "vid": vendor_id}
+                {"rfq_num": rfq_number, "pr_id": actual_pr_id}
             )
+            db.commit()
+            rfq_id = db.execute(text("SELECT LAST_INSERT_ID()")).scalar()
+        else:
+            rfq_id = existing[0]
+
+        # Insert vendors
+        for vendor_id in body.vendor_ids:
+            # Check if already assigned
+            v_exist = db.execute(
+                text("SELECT id FROM rfq_vendors WHERE rfq_id = :rfq AND vendor_id = :vid"),
+                {"rfq": rfq_id, "vid": vendor_id}
+            ).fetchone()
             
-            # Also create PR items vendor mapping for the vendor portal logic
-            # This ensures that when the vendor logs in, they see the PR in their list!
-            pr_items = db.execute(
-                text("SELECT id FROM purchase_requisition_items WHERE purchase_requisition_id = :pr_id"),
-                {"pr_id": actual_pr_id}
-            ).fetchall()
-            
-            bp_no = db.execute(
-                text("SELECT bp_no FROM vendor_master WHERE vendor_id = :vid"),
-                {"vid": vendor_id}
-            ).scalar()
-            
-            for item in pr_items:
+            if not v_exist:
                 db.execute(
                     text("""
-                    INSERT INTO purchase_requisition_item_vendors 
-                    (purchase_requisition_item_id, vendor_id, bp_no, status, sent_at)
-                    VALUES (:item_id, :vid, :bp_no, 'OPEN', NOW())
+                    INSERT INTO rfq_vendors (rfq_id, vendor_id, status, sent_at)
+                    VALUES (:rfq, :vid, 'PENDING', NOW())
                     """),
-                    {"item_id": item[0], "vid": vendor_id, "bp_no": bp_no}
+                    {"rfq": rfq_id, "vid": vendor_id}
                 )
                 
-    db.commit()
-    return {"status": "success", "message": "RFQ created successfully"}
+                # Also create PR items vendor mapping for the vendor portal logic
+                # This ensures that when the vendor logs in, they see the PR in their list!
+                pr_items = db.execute(
+                    text("SELECT id FROM purchase_requisition_items WHERE purchase_requisition_id = :pr_id"),
+                    {"pr_id": actual_pr_id}
+                ).fetchall()
+                
+                bp_no = db.execute(
+                    text("SELECT bp_no FROM vendor_master WHERE vendor_id = :vid"),
+                    {"vid": vendor_id}
+                ).scalar()
+                
+                for item in pr_items:
+                    db.execute(
+                        text("""
+                        INSERT INTO purchase_requisition_item_vendors 
+                        (purchase_requisition_item_id, vendor_id, bp_no, status, sent_at)
+                        VALUES (:item_id, :vid, :bp_no, 'OPEN', NOW())
+                        """),
+                        {"item_id": item[0], "vid": vendor_id, "bp_no": bp_no}
+                    )
+                    
+        db.commit()
+        return {"status": "success", "message": "RFQ created successfully", "rfq_number": rfq_number}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/purchase-requisitions/{pr_id}/{action}")
@@ -373,51 +385,55 @@ def get_all_vendors_for_rfq(db: Session = Depends(get_db)):
 
 import random
 
+# pyrefly: ignore [missing-import]
 from sqlalchemy import text
 
 @router.get("/selection-list")
 def get_vendor_selection_list(pr_number: str = None, material_code: str = None, material_codes: str = None, db: Session = Depends(get_db)):
-    if material_codes or material_code:
-        # Use material_codes if provided, otherwise fallback to material_code
-        codes = [c.strip() for c in (material_codes or material_code).split(',')]
-        
-        # Build query checking both material_code (for string codes) and material_id (for numeric IDs)
-        where_clauses = []
-        params = {}
-        for i, code in enumerate(codes):
-            if code.isdigit():
-                where_clauses.append(f"material_id = :mc{i}")
-            else:
-                where_clauses.append(f"material_code = :mc{i}")
-            params[f"mc{i}"] = code
+    try:
+        if material_codes or material_code:
+            # Use material_codes if provided, otherwise fallback to material_code
+            codes = [c.strip() for c in (material_codes or material_code).split(',')]
             
-        where_str = " OR ".join(where_clauses)
-        query_str = f"SELECT vendor_id FROM material WHERE {where_str}"
-        
-        result = db.execute(text(query_str), params).fetchall() if where_str else []
-        valid_vendor_ids = [row[0] for row in result]
-        eligible_vendors_db = db.query(VendorMaster).filter(VendorMaster.vendor_id.in_(valid_vendor_ids)).all() if valid_vendor_ids else []
-    else:
-        eligible_vendors_db = db.query(VendorMaster).all()
+            # Build query checking both material_code (for string codes) and material_id (for numeric IDs)
+            where_clauses = []
+            params = {}
+            for i, code in enumerate(codes):
+                if code.isdigit():
+                    where_clauses.append(f"material_id = :mc{i}")
+                else:
+                    where_clauses.append(f"material_code = :mc{i}")
+                params[f"mc{i}"] = code
+                
+            where_str = " OR ".join(where_clauses)
+            query_str = f"SELECT vendor_id FROM material WHERE {where_str}"
+            
+            result = db.execute(text(query_str), params).fetchall() if where_str else []
+            valid_vendor_ids = [row[0] for row in result]
+            eligible_vendors_db = db.query(VendorMaster).filter(VendorMaster.vendor_id.in_(valid_vendor_ids)).all() if valid_vendor_ids else []
+        else:
+            eligible_vendors_db = db.query(VendorMaster).all()
 
-    all_vendors_db = db.query(VendorMaster).all()
+        all_vendors_db = db.query(VendorMaster).all()
 
-    def format_vendor(v):
+        def format_vendor(v):
+            return {
+                "vendor_id": v.vendor_id,
+                "bp_no": v.bp_no,
+                "vendor_name": v.name,
+                "email": v.email,
+                "response_rate": "100% in SLA",
+                "avg_quote_time": f"{round(random.uniform(0.5, 2.5), 1)} days",
+                "price_index": str(round(random.uniform(0.8, 1.2), 2)),
+                "compliance": "No data"
+            }
+
+        all_vendors = [format_vendor(v) for v in all_vendors_db]
+        eligible_vendors = [format_vendor(v) for v in eligible_vendors_db]
+                
         return {
-            "vendor_id": v.vendor_id,
-            "bp_no": v.bp_no,
-            "vendor_name": v.name,
-            "email": v.email,
-            "response_rate": "100% in SLA",
-            "avg_quote_time": f"{round(random.uniform(0.5, 2.5), 1)} days",
-            "price_index": str(round(random.uniform(0.8, 1.2), 2)),
-            "compliance": "No data"
+            "all_vendors": all_vendors,
+            "eligible_vendors": eligible_vendors
         }
-
-    all_vendors = [format_vendor(v) for v in all_vendors_db]
-    eligible_vendors = [format_vendor(v) for v in eligible_vendors_db]
-            
-    return {
-        "all_vendors": all_vendors,
-        "eligible_vendors": eligible_vendors
-    }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
