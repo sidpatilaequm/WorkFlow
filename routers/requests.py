@@ -269,48 +269,39 @@ def list_requests(
             q = q.filter(models.WorkflowRequest.workflow_id == workflow_id)
         return q.all()
 
-    if current_user.role == models.UserRole.approver:
-        now = datetime.utcnow()
-        own_group_ids = [
-            m.group_id for m in
-            db.query(models.ApproverGroupMember)
-            .filter(models.ApproverGroupMember.user_id == current_user.id)
-            .all()
-        ]
-        # Also include groups where current_user is standing in as the
-        # delegate for a currently out-of-office member, even though they
-        # aren't a member of that group themselves — keeps this in sync with
-        # the OOO stand-in logic in approvals.py (take_action / my_pending).
-        delegate_group_ids = [
-            m.group_id for m in
-            db.query(models.ApproverGroupMember)
-            .join(models.User, models.ApproverGroupMember.user_id == models.User.id)
-            .filter(
-                models.User.delegate_id == current_user.id,
-                models.User.ooo_until.isnot(None),
-                models.User.ooo_until > now,
-            )
-            .all()
-        ]
-        group_ids = list(set(own_group_ids + delegate_group_ids))
-        workflow_ids = [
-            ws.workflow_id for ws in
-            db.query(models.WorkflowStage)
-            .filter(models.WorkflowStage.approver_group_id.in_(group_ids))
-            .all()
-        ] if group_ids else []
-        q = db.query(models.WorkflowRequest).filter(
-            (models.WorkflowRequest.workflow_id.in_(workflow_ids)) |
-            (models.WorkflowRequest.submitter_id == current_user.id)
+    now = datetime.utcnow()
+    own_group_ids = [
+        m.group_id for m in
+        db.query(models.ApproverGroupMember)
+        .filter(models.ApproverGroupMember.user_id == current_user.id)
+        .all()
+    ]
+    # Also include groups where current_user is standing in as the
+    # delegate for a currently out-of-office member, even though they
+    # aren't a member of that group themselves — keeps this in sync with
+    # the OOO stand-in logic in approvals.py (take_action / my_pending).
+    delegate_group_ids = [
+        m.group_id for m in
+        db.query(models.ApproverGroupMember)
+        .join(models.User, models.ApproverGroupMember.user_id == models.User.id)
+        .filter(
+            models.User.delegate_id == current_user.id,
+            models.User.ooo_until.isnot(None),
+            models.User.ooo_until > now,
         )
-        if status:
-            q = q.filter(models.WorkflowRequest.status == status)
-        if workflow_id:
-            q = q.filter(models.WorkflowRequest.workflow_id == workflow_id)
-        return q.all()
-
+        .all()
+    ]
+    group_ids = list(set(own_group_ids + delegate_group_ids))
+    workflow_ids = [
+        ws.workflow_id for ws in
+        db.query(models.WorkflowStage)
+        .filter(models.WorkflowStage.approver_group_id.in_(group_ids))
+        .all()
+    ] if group_ids else []
+    
     q = db.query(models.WorkflowRequest).filter(
-        models.WorkflowRequest.submitter_id == current_user.id
+        (models.WorkflowRequest.workflow_id.in_(workflow_ids)) |
+        (models.WorkflowRequest.submitter_id == current_user.id)
     )
     if status:
         q = q.filter(models.WorkflowRequest.status == status)
