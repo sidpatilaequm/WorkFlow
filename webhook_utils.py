@@ -20,6 +20,7 @@ EVENTS = {
     "stage.escalated":    "A stage was escalated due to SLA breach",
     "request.approved":   "A workflow request was fully approved",
     "request.rejected":   "A workflow request was rejected",
+    "request.escalated":  "A workflow request was escalated and needs manual attention",
     "request.cancelled":  "A workflow request was cancelled",
 }
 

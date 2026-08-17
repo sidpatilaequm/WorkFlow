@@ -11,7 +11,7 @@ from database import get_db
 from schemas import RequestCreate, RequestOut, ManualMessageCreate
 from auth_utils import decode_approval_token, get_current_user
 import models
-from routers.approvals import _fire_stage_notification, _run_async
+from routers.approvals import _fire_stage_notification, _fire_approval_webhook, _run_async
 from services.notification import notification_service
 from workflow_snapshot import get_stage_config, member_ids as snapshot_member_ids, next_sequential_member
 from template_utils import resolve_template_variables, render_template
@@ -380,6 +380,7 @@ def cancel_request(
         action="cancelled",
         detail=f"Request cancelled by {current_user.name}",
     ))
+    _fire_approval_webhook("request.cancelled", req)
     db.commit()
     return {"detail": "Request cancelled"}
 

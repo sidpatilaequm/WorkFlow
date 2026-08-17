@@ -28,15 +28,27 @@ def _fire_approval_webhook(event: str, req: models.WorkflowRequest):
     Opens its own DB session inside the background thread rather than reusing
     the caller's request-scoped `db` — that session may still be mid-commit on
     the main thread when this runs, and SQLAlchemy sessions aren't safe to
-    share across threads.
+    share across threads. Re-fetches the request by id in that new session
+    rather than reusing the `req` instance passed in: build_payload() reads
+    several of its columns, and any that aren't already loaded in memory
+    trigger a lazy-load against whatever session `req` is *actually* bound to
+    (the caller's, not this thread's) — which may be mid-commit or already
+    closed by the time this background thread runs. Only `req.id` (the
+    primary key, always resident) is safe to read directly from the passed-in
+    instance.
     """
     from database import SessionLocal
     import webhook_utils
 
+    request_id = req.id
+
     async def _do():
         session = SessionLocal()
         try:
-            await webhook_utils.fire_webhook(session, event, req)
+            fresh_req = session.query(models.WorkflowRequest).filter(models.WorkflowRequest.id == request_id).first()
+            if fresh_req is None:
+                return
+            await webhook_utils.fire_webhook(session, event, fresh_req)
         finally:
             session.close()
 
@@ -359,6 +371,7 @@ def _check_stage_completion(db: Session, request_stage: models.RequestStage, req
         elif behavior == models.RejectionBehavior.escalate:
             request_stage.status = models.RequestStatus.escalated
             req.status = models.RequestStatus.escalated
+            _fire_approval_webhook("request.escalated", req)
             return
 
     # 2. Approval logic
