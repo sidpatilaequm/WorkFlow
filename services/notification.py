@@ -168,48 +168,26 @@ class NotificationService:
         ) else "rejected"
         colour = "#1D9E75" if status_word == "approved" else "#E24B4A"
 
-        # Build comments section
-        comments_html = ""
+        from .email_builder import build_email_html
+        
+        comments_text = ""
         if comments:
-            rows = "".join(
-                f'<tr>'
-                f'<td style="padding:8px;border:1px solid #eee;font-size:12px">{c["stage"]}</td>'
-                f'<td style="padding:8px;border:1px solid #eee;font-size:12px"><strong>{c["actor"]}</strong></td>'
-                f'<td style="padding:8px;border:1px solid #eee;font-size:12px">{c["comment"]}</td>'
-                f'</tr>'
-                for c in comments
-            )
-            comments_html = f"""
-            <h3 style="margin-top:24px;font-size:14px">Decision Trail & Comments</h3>
-            <table style="border-collapse:collapse;width:100%">
-              <thead>
-                <tr>
-                  <th style="padding:8px;border:1px solid #eee;text-align:left;background:#f5f5f5;font-size:12px">Stage</th>
-                  <th style="padding:8px;border:1px solid #eee;text-align:left;background:#f5f5f5;font-size:12px">Actor</th>
-                  <th style="padding:8px;border:1px solid #eee;text-align:left;background:#f5f5f5;font-size:12px">Comment</th>
-                </tr>
-              </thead>
-              <tbody>{rows}</tbody>
-            </table>
-            """
+            comments_text = "Decision Trail & Comments:\n"
+            for c in comments:
+                comments_text += f"- {c['stage']} ({c['actor']}): {c['comment']}\n"
 
-        html = f"""
-        <div style="font-family:sans-serif;max-width:600px;margin:0 auto">
-          <h2 style="color:{colour}">Document {status_word.title()}</h2>
-          <p>Your document <strong>{request.document_name or request.title}</strong> has been
-          <strong>{status_word}</strong> in the <em>{workflow_name}</em> workflow.</p>
-          {comments_html}
-          <div style="margin-top:24px">
-            <a href="{FRONTEND_URL}/requests?request={request.id}"
-               style="background:#4F7DFF;color:white;padding:12px 28px;text-decoration:none;border-radius:6px;font-weight:600">
-              View Request &rarr;
-            </a>
-          </div>
-          <p style="color:#888;font-size:12px;margin-top:16px">
-            Or copy this link: {FRONTEND_URL}/requests?request={request.id}
-          </p>
-        </div>
-        """
+        html = build_email_html(
+            subject=f"[{status_word.upper()}] {request.document_name or request.title}",
+            preheader=f"Your document has been {status_word}.",
+            heading=f"Document {status_word.title()}",
+            intro=f"Your document {request.document_name or request.title} has been {status_word} in the {workflow_name} workflow.",
+            outro=comments_text,
+            status=status_word.title(),
+            tone="ok" if status_word == "approved" else "bad",
+            cta="View Request",
+            cta_url=f"{FRONTEND_URL}/requests?request={request.id}",
+        )
+
         await self.send_email(
             to=[submitter_email],
             subject=f"[{status_word.upper()}] {request.document_name or request.title}",
@@ -227,13 +205,15 @@ class NotificationService:
         sender_name: str,
     ) -> bool:
         """Send a standalone email notification with no workflow-request context."""
-        html = f"""
-        <div style="font-family:sans-serif;max-width:600px;margin:0 auto">
-          <h2>{subject}</h2>
-          <p style="color:#888;font-size:13px">From {sender_name}</p>
-          <div style="background:#F5F6F8;border-radius:8px;padding:16px;white-space:pre-wrap">{message}</div>
-        </div>
-        """
+        from .email_builder import build_email_html
+        html = build_email_html(
+            subject=subject,
+            preheader=f"Message from {sender_name}",
+            heading=subject,
+            intro=message,
+            outro=f"From {sender_name}",
+            tone="info",
+        )
         return await self.send_email(
             to=to,
             subject=subject,
@@ -252,17 +232,24 @@ class NotificationService:
         sender_name: str,
         subject: Optional[str] = None,
     ) -> bool:
-        html = f"""
-        <div style="font-family:sans-serif;max-width:600px;margin:0 auto">
-          <h2>Message about: {request.document_name or request.title}</h2>
-          <p style="color:#888;font-size:13px">From {sender_name} · Request #{request.id}</p>
-          <div style="background:#F5F6F8;border-radius:8px;padding:16px;white-space:pre-wrap">{message}</div>
-          <p style="margin-top:20px"><a href="{FRONTEND_URL}/requests/{request.id}">View request &rarr;</a></p>
-        </div>
-        """
+        from .email_builder import build_email_html
+        
+        email_subj = subject or f"[Message] {request.document_name or request.title}"
+        
+        html = build_email_html(
+            subject=email_subj,
+            preheader=f"Message about: {request.document_name or request.title}",
+            heading=f"Message about: {request.document_name or request.title}",
+            intro=message,
+            outro=f"From {sender_name} · Request #{request.id}",
+            tone="info",
+            cta="View Request",
+            cta_url=f"{FRONTEND_URL}/requests/{request.id}",
+        )
+        
         return await self.send_email(
             to=to,
-            subject=subject or f"[Message] {request.document_name or request.title}",
+            subject=email_subj,
             html_body=html,
             text_body=message,
         )
