@@ -193,67 +193,6 @@ class NotificationService:
             </table>
             """
 
-        if workflow_name.lower() in ("pre boarding", "preboarding") and status_word == "approved":
-            email_val = request.request_metadata.get("vendor_email", submitter_email) if request.request_metadata else submitter_email
-            pwd_val = request.request_metadata.get("vendor_password", "User@123") if request.request_metadata else "User@123"
-            vendor_name = request.request_metadata.get("vendor_name", "Partner") if request.request_metadata else "Partner"
-            contact_name = request.request_metadata.get("contact_name", vendor_name) if request.request_metadata else vendor_name
-            
-            html = f"""
-            <div style="font-family:sans-serif;max-width:600px;margin:0 auto;border:1px solid #eee;border-radius:8px;padding:24px;box-shadow:0 2px 8px rgba(0,0,0,0.05)">
-              <h2 style="color:#1D9E75;margin-top:0;">Vendor {vendor_name} Account Approved!</h2>
-              <p>Dear {contact_name},</p>
-              <p>We are pleased to inform you that your onboarding request has been approved. Your vendor portal login credentials have been generated:</p>
-              
-              <table style="width:100%;border-collapse:collapse;margin:24px 0;">
-                <tr>
-                  <td style="padding:12px;border:1px solid #e0e0e0;font-weight:600;width:35%;background:#fafafa">Portal URL</td>
-                  <td style="padding:12px;border:1px solid #e0e0e0"><a href="{FRONTEND_URL}/login/" style="color:#1D9E75;text-decoration:none;font-weight:600">{FRONTEND_URL}/login/</a></td>
-                </tr>
-                <tr>
-                  <td style="padding:12px;border:1px solid #e0e0e0;font-weight:600;background:#fafafa">Username (Email)</td>
-                  <td style="padding:12px;border:1px solid #e0e0e0;font-family:monospace">{email_val}</td>
-                </tr>
-                <tr>
-                  <td style="padding:12px;border:1px solid #e0e0e0;font-weight:600;background:#fafafa">Password</td>
-                  <td style="padding:12px;border:1px solid #e0e0e0;font-family:monospace">{pwd_val}</td>
-                </tr>
-              </table>
-              
-              <p style="color:#E24B4A;font-size:13px;margin-bottom:24px;">For security reasons, please change your password immediately upon your first login.</p>
-              
-              <p style="margin:0;color:#555">Best regards,<br><strong>Vendor Operations Team</strong></p>
-            </div>
-            """
-            await self.send_email(
-                to=[submitter_email],
-                subject=f"Vendor {vendor_name} Account Approved!",
-                html_body=html,
-            )
-            return
-
-        elif workflow_name.lower() == "vendor approval" and status_word == "approved":
-            vendor_name = request.request_metadata.get("vendor_name", "Partner") if request.request_metadata else "Partner"
-            contact_name = request.request_metadata.get("contact_name", vendor_name) if request.request_metadata else vendor_name
-            vendor_code = request.request_metadata.get("vendor_code", "xxxxx") if request.request_metadata else "xxxxx"
-            
-            html = f"""
-            <div style="font-family:sans-serif;max-width:600px;margin:0 auto;border:1px solid #eee;border-radius:8px;padding:24px;box-shadow:0 2px 8px rgba(0,0,0,0.05)">
-              <h2 style="color:#1D9E75;margin-top:0;">{vendor_name} Onboarding Complete!</h2>
-              <p>Dear {contact_name},</p>
-              <p>All your uploaded documents have been approved by the team. Thanks.</p>
-              <p>The Vendor Code in SAP is {vendor_code} for all your future communications. Please use the login and password to start your journey with Ankt Aerospace Private Limited.</p>
-              
-              <p style="margin-top:24px;color:#555">Best regards,<br><strong>Vendor Operations Team</strong></p>
-            </div>
-            """
-            await self.send_email(
-                to=[submitter_email],
-                subject=f"Vendor {vendor_name} Documents Approved",
-                html_body=html,
-            )
-            return
-
         html = f"""
         <div style="font-family:sans-serif;max-width:600px;margin:0 auto">
           <h2 style="color:{colour}">Document {status_word.title()}</h2>

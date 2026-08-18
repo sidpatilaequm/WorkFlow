@@ -169,6 +169,12 @@ class Workflow(Base):
     # template_utils.py for the formula grammar (arithmetic only, no calls).
     message_variables    = Column(JSON, nullable=True)
 
+    # Stable marker used by code that needs to recognise "this is the Vendor
+    # Onboarding workflow" (e.g. to fire VO.4 on submit, or to skip the
+    # generic completion email once email_templates.py sends the real one)
+    # instead of matching on workflow.name, which an admin can rename freely.
+    email_process_key   = Column(String(50), nullable=True)
+
     created_by_id        = Column(Integer, ForeignKey("user_details.user_id"))
     created_at           = Column(DateTime(timezone=True), server_default=func.now())
     updated_at           = Column(DateTime(timezone=True), onupdate=func.now())
@@ -452,6 +458,72 @@ class StandaloneMessage(Base):
     created_at              = Column(DateTime(timezone=True), server_default=func.now())
 
     sender = relationship("User")
+
+
+class EmailFooter(Base):
+    """
+    Shared footer library for email_templates — most templates point at one
+    of these by id rather than carrying their own wording, so a single edit
+    here updates every mail using it. A template may still override with its
+    own footer_override_reason/footer_override_legal when it genuinely needs
+    to say something different from every other mail using the same footer.
+    """
+    __tablename__ = "email_footers"
+
+    id           = Column(Integer, primary_key=True, index=True)
+    name         = Column(String(200), nullable=False)
+    reason_text  = Column(Text, nullable=False)
+    legal_line   = Column(Text, nullable=True)
+    created_at   = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at   = Column(DateTime(timezone=True), onupdate=func.now())
+
+
+class EmailTemplate(Base):
+    """
+    One admin-editable transactional email, identified by a stable mail_key
+    (e.g. "VO.2") that trigger call sites reference — never the row id, so
+    re-seeding or reordering never breaks a trigger. Rendered by
+    services/email_templates.py:render_email_template, which walks these
+    columns in the same order NotificationEmailTemplates' mockup does
+    (masthead -> status strip -> heading -> intro -> detail table -> CTA ->
+    outro -> footer), substituting {{merge_tag}} placeholders via
+    template_utils.render_template.
+    """
+    __tablename__ = "email_templates"
+
+    id                      = Column(Integer, primary_key=True, index=True)
+    process_key             = Column(String(50), nullable=False)   # e.g. "vendor_onboarding"
+    mail_key                = Column(String(20), nullable=False, unique=True)  # e.g. "VO.2"
+    mail_label              = Column(String(200), nullable=False)
+    enabled                 = Column(Boolean, default=True)
+
+    from_address            = Column(String(300), nullable=True)
+    reply_to                = Column(String(300), nullable=True)
+
+    status_strip_text       = Column(String(300), nullable=True)
+    status_strip_tone       = Column(String(10), nullable=True)   # info | ok | warn | bad
+
+    subject                 = Column(String(300), nullable=False)
+    preheader               = Column(String(300), nullable=True)
+    heading                 = Column(String(300), nullable=False)
+    intro                   = Column(Text, nullable=True)
+    detail_rows             = Column(JSON, nullable=True)   # [[label, value_template], ...]
+    cta_label                = Column(String(100), nullable=True)
+    cta_url                  = Column(String(500), nullable=True)
+    outro                    = Column(Text, nullable=True)
+
+    footer_id                = Column(Integer, ForeignKey("email_footers.id"), nullable=True)
+    footer_override_reason   = Column(Text, nullable=True)
+    footer_override_legal    = Column(Text, nullable=True)
+
+    sample_data              = Column(JSON, nullable=True)   # used by the preview/test-send endpoints
+
+    updated_by_id             = Column(Integer, ForeignKey("user_details.user_id"), nullable=True)
+    created_at                = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at                = Column(DateTime(timezone=True), onupdate=func.now())
+
+    footer      = relationship("EmailFooter")
+    updated_by  = relationship("User")
 
 
 # --- BUDGET MODELS ---

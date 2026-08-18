@@ -39,7 +39,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session, joinedload
 
 
-from routers import workflows, requests, stages, approvals, analytics, auth, onboarding_dashboard, reports
+from routers import workflows, requests, stages, approvals, analytics, auth, onboarding_dashboard, reports, email_templates
 from database import get_db, init_db
 from models import (
     Organisation, Department, Project, CostType, Status,
@@ -1249,6 +1249,7 @@ app.include_router(requests.router,   prefix="/api/requests",  tags=["Requests"]
 app.include_router(stages.router,     prefix="/api/stages",    tags=["Stages"])
 app.include_router(approvals.router,  prefix="/api/approvals", tags=["Approvals"])
 app.include_router(analytics.router,  prefix="/api/analytics", tags=["Analytics"])
+app.include_router(email_templates.router, prefix="/api/email-templates", tags=["Email Templates"])
 app.include_router(reports.router)
 app.include_router(vendors.router)
 app.include_router(vendor_materials.router)

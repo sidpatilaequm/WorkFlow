@@ -12,8 +12,16 @@ Covers:
         addresses without any workflow request context; supports {{key}}
         rendering and optional recurring resend.
 """
+from typing import Sequence, Union
+
 import sqlalchemy as sa
 from alembic import op
+
+# revision identifiers, used by Alembic.
+revision: str = "0003_parallel_group_and_standalone_messages"
+down_revision: Union[str, None] = "0002_message_variables_and_scheduled_messages"
+branch_labels: Union[str, Sequence[str], None] = None
+depends_on: Union[str, Sequence[str], None] = None
 
 SCHEMA = "multimedia_governance"
 

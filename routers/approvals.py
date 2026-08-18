@@ -286,6 +286,15 @@ def _fire_completion_notification(db, req):
     if not submitter or not submitter.email or not workflow:
         return
 
+    # Vendor Onboarding's own approval email (VO.6, via email_templates.py) is
+    # fired by backend_java's provisionVendorAccount once real vendor_code/
+    # login credentials exist — a generic notice here would go to the intake
+    # service account (the submitter of record for every self-serve
+    # registration), not the applicant, and would arrive redundantly
+    # alongside the real one.
+    if getattr(workflow, "email_process_key", None) == "vendor_onboarding":
+        return
+
     # Collect all comments from approval actions
     comments = []
     for rs in req.stages:

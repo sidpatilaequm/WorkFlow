@@ -780,3 +780,74 @@ class DepartmentSetHead(BaseModel):
 class BudgetUploadDecide(BaseModel):
     approve: bool
     decided_by: Optional[str] = None
+
+
+# ─── Email templates ────────────────────────────────────────────────────────
+
+class EmailFooterOut(BaseModel):
+    id: int
+    name: str
+    reason_text: str
+    legal_line: Optional[str] = None
+    class Config:
+        from_attributes = True
+
+class EmailFooterUpdate(BaseModel):
+    name: Optional[str] = None
+    reason_text: Optional[str] = None
+    legal_line: Optional[str] = None
+
+class EmailTemplateOut(BaseModel):
+    id: int
+    process_key: str
+    mail_key: str
+    mail_label: str
+    enabled: bool
+    from_address: Optional[str] = None
+    reply_to: Optional[str] = None
+    status_strip_text: Optional[str] = None
+    status_strip_tone: Optional[str] = None
+    subject: str
+    preheader: Optional[str] = None
+    heading: str
+    intro: Optional[str] = None
+    detail_rows: Optional[List[List[str]]] = None
+    cta_label: Optional[str] = None
+    cta_url: Optional[str] = None
+    outro: Optional[str] = None
+    footer_id: Optional[int] = None
+    footer_override_reason: Optional[str] = None
+    footer_override_legal: Optional[str] = None
+    sample_data: Optional[Any] = None
+    class Config:
+        from_attributes = True
+
+class EmailTemplateUpdate(BaseModel):
+    enabled: Optional[bool] = None
+    from_address: Optional[str] = None
+    reply_to: Optional[str] = None
+    status_strip_text: Optional[str] = None
+    status_strip_tone: Optional[str] = None
+    subject: Optional[str] = None
+    preheader: Optional[str] = None
+    heading: Optional[str] = None
+    intro: Optional[str] = None
+    detail_rows: Optional[List[List[str]]] = None
+    cta_label: Optional[str] = None
+    cta_url: Optional[str] = None
+    outro: Optional[str] = None
+    footer_id: Optional[int] = None
+    footer_override_reason: Optional[str] = None
+    footer_override_legal: Optional[str] = None
+
+class EmailTemplatePreviewOut(BaseModel):
+    subject: str
+    html: str
+    text: str
+
+class EmailTemplateTestSend(BaseModel):
+    to_email: EmailStr
+
+class EmailTemplateTriggerRequest(BaseModel):
+    to_email: EmailStr
+    variables: dict = {}

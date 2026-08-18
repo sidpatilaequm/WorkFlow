@@ -13,6 +13,7 @@ from auth_utils import decode_approval_token, get_current_user
 import models
 from routers.approvals import _fire_stage_notification, _fire_approval_webhook, _run_async
 from services.notification import notification_service
+from services.email_templates import send_triggered_email
 from workflow_snapshot import get_stage_config, member_ids as snapshot_member_ids, next_sequential_member
 from template_utils import resolve_template_variables, render_template
 
@@ -29,6 +30,37 @@ def _get_user_or_404(user_id: int, db: Session) -> models.User:
     if not user:
         raise HTTPException(404, "User not found")
     return user
+
+
+def _fire_vo4_notification(wf: models.Workflow, request_metadata: Optional[dict]):
+    """VO.4 "application received" — WorkFlow already knows about the
+    submission natively (unlike VO.2/VO.6, which Java triggers over HTTP
+    after doing its own work), so this fires directly rather than through
+    the /api/email-templates/trigger/ endpoint. Recipient/name come from
+    request_metadata's "email"/"contactName" keys — the exact keys Java's
+    SupplierRegistrationService.submit() puts there — not the submitter's
+    own email, which resolves to the internal intake service account.
+    """
+    if getattr(wf, "email_process_key", None) != "vendor_onboarding":
+        return
+    metadata = request_metadata or {}
+    to_email = metadata.get("email")
+    if not to_email:
+        return
+    variables = {
+        "contact_name": metadata.get("contactName") or "",
+        "vendor_name": metadata.get("vendorName") or "",
+    }
+
+    async def _do():
+        from database import SessionLocal
+        session = SessionLocal()
+        try:
+            await send_triggered_email(session, "VO.4", to_email, variables)
+        finally:
+            session.close()
+
+    _run_async(_do())
 
 
 def _build_workflow_snapshot(wf: models.Workflow) -> dict:
@@ -163,6 +195,8 @@ def submit_request(
     )
     db.add(req)
     db.flush()
+
+    _fire_vo4_notification(wf, payload.request_metadata)
 
     if auto_approve:
         req.status = models.RequestStatus.approved
