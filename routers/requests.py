@@ -48,8 +48,8 @@ def _fire_vo4_notification(wf: models.Workflow, request_metadata: Optional[dict]
     if not to_email:
         return
     variables = {
-        "contact_name": metadata.get("contactName") or "",
-        "vendor_name": metadata.get("vendorName") or "",
+        "contact_name": metadata.get("contactName") or "there",
+        "vendor_name": metadata.get("vendorName") or "your company",
     }
 
     async def _do():
