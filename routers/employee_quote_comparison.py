@@ -325,52 +325,34 @@ def award_quote(
     db.execute(text("""UPDATE vendor_quotations SET status='REJECTED', modified_date=NOW()
                        WHERE pr_id=:p AND quotation_id<>:q AND status='SUBMITTED'"""),
                {"p": vq.pr_id, "q": qid})
-
-    year = date.today().year
-    last = db.execute(text("SELECT po_number FROM portal_purchase_orders WHERE po_number LIKE :pfx ORDER BY po_number DESC LIMIT 1"),
-                      {"pfx": f"PO-{year}-%"}).scalar()
-    seq = 1
-    if last:
-        try:
-            seq = int(last.rsplit("-", 1)[1]) + 1
-        except Exception:
-            seq = 1
-    po_number = f"PO-{year}-{seq:04d}"
-
-    nt = safe_rows(db, "SELECT quoted_delivery_date, payment_terms_id FROM vendor_quotations WHERE quotation_id=:q", {"q": qid})
-    quoted_dd = nt[0]["quoted_delivery_date"] if nt else None
-    pt_id = nt[0]["payment_terms_id"] if nt else None
-
-    db.execute(text("""
-        INSERT INTO portal_purchase_orders
-            (po_number, po_date, pr_id, quotation_id, vendor_id, currency, payment_terms_id,
-             requested_delivery_date, confirmed_delivery_date, status,
-             subtotal, gst_total, freight_total, grand_total, created_date, modified_date)
-        VALUES (:pn, CURDATE(), :pr, :q, :v, :cur, :pt, :rdd, :cdd, 'CREATED',
-                :sub, :gst, :fr, :gt, NOW(), NOW())
-    """), {"pn": po_number, "pr": vq.pr_id, "q": qid, "v": vq.vendor_id,
-           "cur": vq.currency or "INR", "pt": pt_id,
-           "rdd": pr.required_date, "cdd": quoted_dd,
-           "sub": float(vq.subtotal_amount or 0), "gst": float(vq.gst_total_amount or 0),
-           "fr": float(vq.freight_amount or 0), "gt": float(vq.grand_total_amount or 0)})
-
-    po_id = db.execute(text("SELECT id FROM portal_purchase_orders WHERE po_number=:pn"), {"pn": po_number}).scalar()
-
-    items = db.query(VendorQuotationItem).filter(VendorQuotationItem.quotation_id == qid).all()
-    for n, it in enumerate(items, start=1):
-        line_total = float(it.line_total or 0)
-        gst_amt = float(it.gst_amount or 0)
-        db.execute(text("""
-            INSERT INTO portal_purchase_order_items
-                (po_id, line_number, material_number, material_description, quantity, uom,
-                 unit_price, net_value, tax_percent, tax_amount, total_value)
-            VALUES (:po, :ln, :mn, :md, :qty, :uom, :up, :nv, :tp, :ta, :tv)
-        """), {"po": po_id, "ln": n * 10, "mn": it.item_code or f"ITEM-{n}",
-               "md": (it.description or "")[:500], "qty": float(it.quoted_qty or 0),
-               "uom": it.uom or "EA", "up": float(it.unit_price or 0),
-               "nv": line_total, "tp": float(it.gst_percent or 0), "ta": gst_amt,
-               "tv": line_total + gst_amt})
+    
+    # We must commit the transaction here so that the Java API sees the 'AWARDED' status
     db.commit()
 
-    return {"ok": True, "poNumber": po_number,
-            "message": f"Quote {vq.quotation_number} awarded · PO {po_number} created with {len(items)} line(s)"}
+    po_id = None
+    try:
+        import requests
+        # The Java API expects a POST request to create the PO from the awarded quotation
+        # It also updates the PR status to PO_CREATED
+        java_api_url = f"http://localhost:8080/api/purchase-orders/from-awarded-quotation/{qid}"
+        resp = requests.post(java_api_url, json={})
+        resp.raise_for_status()
+        po_id = resp.json().get("poId")
+    except Exception as e:
+        import logging
+        logging.error(f"Failed to create PO via Java API: {e}")
+        # We continue because the quotation was successfully awarded, even if PO creation failed/delayed.
+
+    # Fetch updated data to return
+    vq_awarded = db.query(VendorQuotation).filter(VendorQuotation.quotation_id == qid).first()
+    
+    return {
+        "status": "success",
+        "message": "Quote awarded successfully",
+        "awardedQuote": {
+            "quotationId": vq_awarded.quotation_id,
+            "vendorId": vq_awarded.vendor_id,
+            "poId": po_id,
+            "status": vq_awarded.status
+        }
+    }

@@ -1,5 +1,5 @@
 # pyrefly: ignore [missing-import]
-from fastapi import APIRouter, Depends, Header, Query, HTTPException
+from fastapi import APIRouter, Depends, Header, Query, HTTPException, BackgroundTasks
 # pyrefly: ignore [missing-import]
 from sqlalchemy.orm import Session
 # pyrefly: ignore [missing-import]
@@ -7,6 +7,8 @@ from sqlalchemy import text, or_
 from collections import defaultdict
 from database import get_db
 from models import VendorMaster, PurchaseRequisition, PurchaseRequisitionItem, PurchaseRequisitionItemVendor, VendorQuotation
+import asyncio
+from services.rfq_email_helper import send_rfq_invitation
 
 router = APIRouter(prefix="/api/vendor", tags=["Vendor Portal (Mock)"])
 
@@ -237,6 +239,7 @@ class CreateRfqBody(BaseModel):
 def create_rfq(
     pr_id: str,
     body: CreateRfqBody,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db)
 ):
     try:
@@ -280,7 +283,9 @@ def create_rfq(
                 text("SELECT id FROM rfq_vendors WHERE rfq_id = :rfq AND vendor_id = :vid"),
                 {"rfq": rfq_id, "vid": vendor_id}
             ).fetchone()
-            
+            if v_exist:
+                raise HTTPException(status_code=400, detail="RFQ is already created for one or more selected vendors on this PR.")
+                
             if not v_exist:
                 db.execute(
                     text("""
@@ -311,6 +316,9 @@ def create_rfq(
                         """),
                         {"item_id": item[0], "vid": vendor_id, "bp_no": bp_no}
                     )
+                
+                # Trigger the RFQ Invitation Email
+                background_tasks.add_task(send_rfq_invitation, actual_pr_id, rfq_number, vendor_id)
                     
         db.commit()
         return {"status": "success", "message": "RFQ created successfully", "rfq_number": rfq_number}

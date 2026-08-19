@@ -33,9 +33,13 @@ from datetime import date, datetime
 from typing import List, Optional
 import requests
 
+# pyrefly: ignore [missing-import]
 from fastapi import FastAPI, Depends, HTTPException, Query, UploadFile, File, Form
+# pyrefly: ignore [missing-import]
 from fastapi.responses import StreamingResponse
+# pyrefly: ignore [missing-import]
 from fastapi.middleware.cors import CORSMiddleware
+# pyrefly: ignore [missing-import]
 from sqlalchemy.orm import Session, joinedload
 
 
@@ -423,8 +427,11 @@ def delete_sub_activity(code: str, db: Session = Depends(get_db)):
 # ── Budget versions ───────────────────────────────────────────────────────────
 @app.get("/api/budget-versions", response_model=List[BudgetVersionOut])
 def list_budget_versions(db: Session = Depends(get_db)):
-    return db.query(BudgetVersion).all()
-
+    versions = db.query(BudgetVersion).all()
+    for v in versions:
+        if isinstance(v.is_current, bytes): v.is_current = int.from_bytes(v.is_current, 'big')
+        if isinstance(v.is_locked, bytes): v.is_locked = int.from_bytes(v.is_locked, 'big')
+    return versions
 @app.post("/api/budget-versions", response_model=BudgetVersionOut, status_code=201)
 def create_budget_version(body: BudgetVersionCreate, db: Session = Depends(get_db)):
     bv = BudgetVersion(version_code=_uid("BV-"), **body.model_dump())

@@ -1,8 +1,11 @@
+# pyrefly: ignore [missing-import]
 from sqlalchemy import (
-    Column, Integer, String, Text, DateTime, Boolean,
+    Column, Integer, BigInteger, String, Text, DateTime, Boolean,
     Float, ForeignKey, Enum as SAEnum, JSON
 )
+# pyrefly: ignore [missing-import]
 from sqlalchemy.orm import relationship
+# pyrefly: ignore [missing-import]
 from sqlalchemy.sql import func
 from database import Base
 import enum
@@ -518,7 +521,7 @@ class EmailTemplate(Base):
 
     sample_data              = Column(JSON, nullable=True)   # used by the preview/test-send endpoints
 
-    updated_by_id             = Column(Integer, ForeignKey("user_details.user_id"), nullable=True)
+    updated_by_id             = Column(BigInteger, ForeignKey("user_details.user_id"), nullable=True)
     created_at                = Column(DateTime(timezone=True), server_default=func.now())
     updated_at                = Column(DateTime(timezone=True), onupdate=func.now())
 
@@ -531,11 +534,12 @@ class EmailTemplate(Base):
 """
 models.py — SQLAlchemy ORM models.
 """
-
+# pyrefly: ignore [missing-import]
 from sqlalchemy import (
     Column, String, Integer, SmallInteger, Date, DateTime, Text,
     ForeignKey, UniqueConstraint, CheckConstraint, Index
 )
+# pyrefly: ignore [missing-import]
 from sqlalchemy.orm import DeclarativeBase, relationship
 from datetime import datetime
 
@@ -894,6 +898,7 @@ class VendorAddress(Base):
 
     vendor = relationship("VendorMaster", back_populates="addresses")
 
+# pyrefly: ignore [missing-import]
 from sqlalchemy import BigInteger, Numeric
 
 class PurchaseOrder(Base):

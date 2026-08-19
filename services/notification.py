@@ -9,8 +9,10 @@ import json
 import logging
 from typing import Optional
 
+# pyrefly: ignore [missing-import]
 import httpx
-import aiosmtplib
+# pyrefly: ignore [missing-import]
+import aiosmtplib 
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
@@ -114,43 +116,72 @@ class NotificationService:
         for email in approver_emails:
             # Isolate each recipient — a failure for one must never abort the rest
             try:
-                amount_row = (
-                    f'<tr><td style="padding:8px;border:1px solid #eee;font-weight:bold">Amount</td>'
-                    f'<td style="padding:8px;border:1px solid #eee">&#8377;{request.amount:,.2f}</td></tr>'
-                    if request.amount else ""
-                )
-                note_html = (
-                    f'<p style="background:#FFF7E0;padding:10px 14px;border-radius:6px;color:#7A5B00;font-size:13px">{note}</p>'
-                    if note else ""
-                )
-                html = f"""
-                <div style="font-family:sans-serif;max-width:600px;margin:0 auto">
-                  <h2>{subject_verb} required: {workflow_name}</h2>
-                  {note_html}
-                  <p>A document is awaiting your {stage_name.lower()}:</p>
-                  <table style="border-collapse:collapse;width:100%">
-                    <tr><td style="padding:8px;border:1px solid #eee;font-weight:bold">Document</td>
-                        <td style="padding:8px;border:1px solid #eee">{request.document_name or request.title}</td></tr>
-                    <tr><td style="padding:8px;border:1px solid #eee;font-weight:bold">Stage</td>
-                        <td style="padding:8px;border:1px solid #eee">{stage_name}</td></tr>
-                    <tr><td style="padding:8px;border:1px solid #eee;font-weight:bold">Type</td>
-                        <td style="padding:8px;border:1px solid #eee;text-transform:capitalize">{stage_type}</td></tr>
-                    {amount_row}
-                  </table>
-                  {instructions_section}
-                  <div style="margin:24px 0">
-                    <a href="{approve_url}" style="background:#1D9E75;color:white;padding:12px 24px;text-decoration:none;border-radius:6px">{positive_label}</a>
-                    &nbsp;&nbsp;
-                    <a href="{reject_url}" style="background:#E24B4A;color:white;padding:12px 24px;text-decoration:none;border-radius:6px">{negative_label}</a>
-                  </div>
-                  <p style="color:#888;font-size:12px">Or review in full: <a href="{FRONTEND_URL}/requests/{request.id}">{FRONTEND_URL}/requests/{request.id}</a></p>
-                </div>
-                """
+                from .email_builder import build_email_html
+                
+                html = None
+                subject = None
+                text_body = None
+                
+                frontend_request_url = f"{FRONTEND_URL}/requests/{request.id}"
+                
+                # Use custom PR approval layout if applicable
+                pr_id = None
+                if request.request_metadata and "prId" in request.request_metadata:
+                    pr_id = request.request_metadata["prId"]
+                    
+                if pr_id:
+                    from database import SessionLocal
+                    from .pr_email_helper import generate_pr_approval_email
+                    db = SessionLocal()
+                    try:
+                        subject, html, text_body = generate_pr_approval_email(db, pr_id, approve_url, reject_url, frontend_request_url)
+                    finally:
+                        db.close()
+                            
+                # Fallback to generic template if not PR or PR fetch failed
+                if not html:
+                    details = [
+                        ["Document", request.document_name or request.title],
+                        ["Stage", stage_name],
+                        ["Type", stage_type.capitalize()]
+                    ]
+                    if request.amount:
+                        details.append(["Amount", f"₹{request.amount:,.2f}"])
+                    
+                    intro = f"A document is awaiting your {stage_name.lower()}."
+                    if note:
+                        intro += f"\n\nNote: {note}"
+                    if instructions:
+                        intro += f"\n\nInstructions: {instructions}"
+                    
+                    outro_text = (
+                        "You can review and action this request by clicking the link above.\n\n"
+                        "If you prefer to action it directly without logging in, use the links below:\n"
+                        f"Approve: {approve_url}\n"
+                        f"Reject: {reject_url}"
+                    )
+                    
+                    subject = f"[{subject_verb} Required] {request.document_name or request.title} — {stage_name}"
+                    
+                    html = build_email_html(
+                        subject=subject,
+                        preheader=f"{subject_verb} required for {request.document_name or request.title}.",
+                        heading=f"{subject_verb} required: {workflow_name}",
+                        intro=intro,
+                        outro=outro_text,
+                        status="Awaiting action",
+                        tone="info",
+                        details=details,
+                        cta=f"{positive_label} Request",
+                        cta_url=frontend_request_url
+                    )
+                    text_body = f"{positive_label}: {approve_url}\n{negative_label}: {reject_url}"
+                
                 await self.send_email(
                     to=[email],
-                    subject=f"[{subject_verb} Required] {request.document_name or request.title} — {stage_name}",
+                    subject=subject,
                     html_body=html,
-                    text_body=f"{positive_label}: {approve_url}\n{negative_label}: {reject_url}",
+                    text_body=text_body,
                 )
             except Exception as exc:
                 logger.error("notify_approvers: failed for %s — %s", email, exc)
@@ -168,48 +199,26 @@ class NotificationService:
         ) else "rejected"
         colour = "#1D9E75" if status_word == "approved" else "#E24B4A"
 
-        # Build comments section
-        comments_html = ""
+        from .email_builder import build_email_html
+        
+        comments_text = ""
         if comments:
-            rows = "".join(
-                f'<tr>'
-                f'<td style="padding:8px;border:1px solid #eee;font-size:12px">{c["stage"]}</td>'
-                f'<td style="padding:8px;border:1px solid #eee;font-size:12px"><strong>{c["actor"]}</strong></td>'
-                f'<td style="padding:8px;border:1px solid #eee;font-size:12px">{c["comment"]}</td>'
-                f'</tr>'
-                for c in comments
-            )
-            comments_html = f"""
-            <h3 style="margin-top:24px;font-size:14px">Decision Trail & Comments</h3>
-            <table style="border-collapse:collapse;width:100%">
-              <thead>
-                <tr>
-                  <th style="padding:8px;border:1px solid #eee;text-align:left;background:#f5f5f5;font-size:12px">Stage</th>
-                  <th style="padding:8px;border:1px solid #eee;text-align:left;background:#f5f5f5;font-size:12px">Actor</th>
-                  <th style="padding:8px;border:1px solid #eee;text-align:left;background:#f5f5f5;font-size:12px">Comment</th>
-                </tr>
-              </thead>
-              <tbody>{rows}</tbody>
-            </table>
-            """
+            comments_text = "Decision Trail & Comments:\n"
+            for c in comments:
+                comments_text += f"- {c['stage']} ({c['actor']}): {c['comment']}\n"
 
-        html = f"""
-        <div style="font-family:sans-serif;max-width:600px;margin:0 auto">
-          <h2 style="color:{colour}">Document {status_word.title()}</h2>
-          <p>Your document <strong>{request.document_name or request.title}</strong> has been
-          <strong>{status_word}</strong> in the <em>{workflow_name}</em> workflow.</p>
-          {comments_html}
-          <div style="margin-top:24px">
-            <a href="{FRONTEND_URL}/requests?request={request.id}"
-               style="background:#4F7DFF;color:white;padding:12px 28px;text-decoration:none;border-radius:6px;font-weight:600">
-              View Request &rarr;
-            </a>
-          </div>
-          <p style="color:#888;font-size:12px;margin-top:16px">
-            Or copy this link: {FRONTEND_URL}/requests?request={request.id}
-          </p>
-        </div>
-        """
+        html = build_email_html(
+            subject=f"[{status_word.upper()}] {request.document_name or request.title}",
+            preheader=f"Your document has been {status_word}.",
+            heading=f"Document {status_word.title()}",
+            intro=f"Your document {request.document_name or request.title} has been {status_word} in the {workflow_name} workflow.",
+            outro=comments_text,
+            status=status_word.title(),
+            tone="ok" if status_word == "approved" else "bad",
+            cta="View Request",
+            cta_url=f"{FRONTEND_URL}/requests?request={request.id}",
+        )
+
         await self.send_email(
             to=[submitter_email],
             subject=f"[{status_word.upper()}] {request.document_name or request.title}",
@@ -227,13 +236,15 @@ class NotificationService:
         sender_name: str,
     ) -> bool:
         """Send a standalone email notification with no workflow-request context."""
-        html = f"""
-        <div style="font-family:sans-serif;max-width:600px;margin:0 auto">
-          <h2>{subject}</h2>
-          <p style="color:#888;font-size:13px">From {sender_name}</p>
-          <div style="background:#F5F6F8;border-radius:8px;padding:16px;white-space:pre-wrap">{message}</div>
-        </div>
-        """
+        from .email_builder import build_email_html
+        html = build_email_html(
+            subject=subject,
+            preheader=f"Message from {sender_name}",
+            heading=subject,
+            intro=message,
+            outro=f"From {sender_name}",
+            tone="info",
+        )
         return await self.send_email(
             to=to,
             subject=subject,
@@ -252,17 +263,24 @@ class NotificationService:
         sender_name: str,
         subject: Optional[str] = None,
     ) -> bool:
-        html = f"""
-        <div style="font-family:sans-serif;max-width:600px;margin:0 auto">
-          <h2>Message about: {request.document_name or request.title}</h2>
-          <p style="color:#888;font-size:13px">From {sender_name} · Request #{request.id}</p>
-          <div style="background:#F5F6F8;border-radius:8px;padding:16px;white-space:pre-wrap">{message}</div>
-          <p style="margin-top:20px"><a href="{FRONTEND_URL}/requests/{request.id}">View request &rarr;</a></p>
-        </div>
-        """
+        from .email_builder import build_email_html
+        
+        email_subj = subject or f"[Message] {request.document_name or request.title}"
+        
+        html = build_email_html(
+            subject=email_subj,
+            preheader=f"Message about: {request.document_name or request.title}",
+            heading=f"Message about: {request.document_name or request.title}",
+            intro=message,
+            outro=f"From {sender_name} · Request #{request.id}",
+            tone="info",
+            cta="View Request",
+            cta_url=f"{FRONTEND_URL}/requests/{request.id}",
+        )
+        
         return await self.send_email(
             to=to,
-            subject=subject or f"[Message] {request.document_name or request.title}",
+            subject=email_subj,
             html_body=html,
             text_body=message,
         )
