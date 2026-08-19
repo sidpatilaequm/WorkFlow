@@ -839,6 +839,7 @@ class EmailTemplateUpdate(BaseModel):
     footer_id: Optional[int] = None
     footer_override_reason: Optional[str] = None
     footer_override_legal: Optional[str] = None
+    sample_data: Optional[dict] = None
 
 class EmailTemplatePreviewOut(BaseModel):
     subject: str
