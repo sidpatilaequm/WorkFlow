@@ -291,8 +291,10 @@ def _fire_completion_notification(db, req):
     # login credentials exist — a generic notice here would go to the intake
     # service account (the submitter of record for every self-serve
     # registration), not the applicant, and would arrive redundantly
-    # alongside the real one.
-    if getattr(workflow, "email_process_key", None) == "vendor_onboarding":
+    # alongside the real one. Vendor Change Request's own decision email
+    # (VCR.2) is fired by backend_java's VendorChangeRequestService once the
+    # change has actually been applied or discarded, for the same reason.
+    if getattr(workflow, "email_process_key", None) in ("vendor_onboarding", "vendor_change_request"):
         return
 
     # Collect all comments from approval actions
