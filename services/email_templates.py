@@ -29,7 +29,7 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
-COMPANY_NAME = os.getenv("EMAIL_COMPANY_NAME", "Ankt Aerospace Private Limited")
+COMPANY_NAME = os.getenv("EMAIL_COMPANY_NAME", "Ankit Aerospace Private Limited")
 
 _FONT = "-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif"
 _MONO = "'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace"
@@ -152,9 +152,10 @@ def render_email_template(template: "models.EmailTemplate", variables: dict) -> 
 
     <tr><td style="padding:20px 32px;border-bottom:1px solid #e4ebf0;">
       <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>
-        <td style="font-family:{_MONO};font-size:12px;font-weight:600;letter-spacing:.06em;color:#ffffff;
-                   background:#15222e;padding:5px 7px;border-radius:3px;width:1%;white-space:nowrap;">SP</td>
-        <td style="padding-left:11px;font-family:{_FONT};font-size:16px;font-weight:700;color:#15222e;">
+        <td style="width:1%;white-space:nowrap;padding-right:11px;">
+          <img src="{_esc(v.get("portal_url"))}/ankit-logo.png" alt="{_esc(v.get("company_name"))}" height="28" style="display:block;height:28px;width:auto;">
+        </td>
+        <td style="font-family:{_FONT};font-size:16px;font-weight:700;color:#15222e;">
           {_esc(v.get("company_name"))}
           <span style="font-family:{_MONO};font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:#5c6e7e;">&nbsp; Supplier Portal</span>
         </td></tr></table>
