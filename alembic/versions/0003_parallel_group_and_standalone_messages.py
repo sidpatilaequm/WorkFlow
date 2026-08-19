@@ -14,6 +14,7 @@ Covers:
 """
 from typing import Sequence, Union
 
+# pyrefly: ignore [missing-import]
 import sqlalchemy as sa
 from alembic import op
 
@@ -30,11 +31,17 @@ SCHEMA = "multimedia_governance"
 
 def upgrade():
     # 1. parallel_group column on workflow_stages
-    op.execute(
-        f"ALTER TABLE {SCHEMA}.workflow_stages "
-        f"ADD COLUMN IF NOT EXISTS parallel_group INT NULL DEFAULT NULL "
-        f"COMMENT 'Stages in the same workflow sharing a non-null parallel_group start simultaneously'"
-    )
+    conn = op.get_bind()
+    has_column = conn.execute(sa.text(
+        "SELECT COUNT(*) FROM information_schema.columns "
+        "WHERE table_schema = :schema AND table_name = 'workflow_stages' AND column_name = 'parallel_group'"
+    ), {"schema": SCHEMA}).scalar()
+    if not has_column:
+        op.execute(
+            f"ALTER TABLE {SCHEMA}.workflow_stages "
+            f"ADD COLUMN parallel_group INT NULL DEFAULT NULL "
+            f"COMMENT 'Stages in the same workflow sharing a non-null parallel_group start simultaneously'"
+        )
 
     # 2. standalone_messages table
     op.execute(f"""

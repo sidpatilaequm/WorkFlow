@@ -26,7 +26,8 @@ def build_email_html(
     cta_url: str = None,
     company_name: str = "Ankt Aerospace Private Limited",
     foot_text: str = "Sent to you because you hold a role in the Supplier Portal.",
-    foot_legal: str = "Ankt Aerospace Private Limited · Commercially confidential."
+    foot_legal: str = "Ankt Aerospace Private Limited A Commercially confidential.",
+    raw_intro: str = None
 ) -> str:
     """Builds a beautiful HTML email matching the Supplier Portal Admin theme."""
     F = "-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif"
@@ -118,6 +119,7 @@ def build_email_html(
     <tr><td style="padding:28px 32px 6px;">
       <h1 style="font-family:{F};font-size:25px;line-height:1.2;font-weight:700;letter-spacing:-.4px;color:#15222e;margin:0 0 14px;">{escape(heading)}</h1>
       {para(intro)}
+      {raw_intro if raw_intro else ""}
     </td></tr>
 
     {details_html}

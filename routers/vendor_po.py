@@ -16,32 +16,41 @@ router = APIRouter(prefix="/api/vendor", tags=["Vendor Portal"])
 @router.get("/purchase-orders")
 def get_purchase_orders(
     x_employee_id: str = Header(None, alias="X-Employee-Id"),
-    vendor_code: str = Query("BP1001", description="SAP Vendor Code (BP No)"),
+    vendor_code: str = Query(None, description="SAP Vendor Code (BP No)"),
     db: Session = Depends(get_db),
 ):
-    vendor = db.query(VendorMaster).filter(VendorMaster.bp_no == vendor_code).first()
-    if not vendor:
-        raise HTTPException(status_code=404, detail=f"Vendor {vendor_code} not found")
+    if not vendor_code:
+        # Fetch ALL purchase orders for Employee View
+        vendor_info = {
+            "sapVendorCode": "ALL",
+            "sapVendorName": "All Vendors",
+            "companyCode": "ALL",
+        }
+        pos = db.query(PortalPurchaseOrder).order_by(PortalPurchaseOrder.po_date.desc()).all()
+    else:
+        vendor = db.query(VendorMaster).filter(VendorMaster.bp_no == vendor_code).first()
+        if not vendor:
+            raise HTTPException(status_code=404, detail=f"Vendor {vendor_code} not found")
 
-    vendor_info = {
-        "sapVendorCode": vendor.bp_no,
-        "sapVendorName": vendor.name,
-        "companyCode": vendor.company_code,
-    }
+        vendor_info = {
+            "sapVendorCode": vendor.bp_no,
+            "sapVendorName": vendor.name,
+            "companyCode": vendor.company_code,
+        }
 
-    from sqlalchemy import text
-    cd_id = db.execute(text("SELECT company_id FROM company_details WHERE company_code = :bp_no"), {"bp_no": vendor.bp_no}).scalar()
-    
-    possible_vendor_ids = [vendor.vendor_id]
-    if cd_id:
-        possible_vendor_ids.append(cd_id)
+        from sqlalchemy import text
+        cd_id = db.execute(text("SELECT company_id FROM company_details WHERE company_code = :bp_no"), {"bp_no": vendor.bp_no}).scalar()
         
-    # Quotations might be saved with vendor_id=1 due to frontend mock, so we include it
-    possible_vendor_ids.append(1)
+        possible_vendor_ids = [vendor.vendor_id]
+        if cd_id:
+            possible_vendor_ids.append(cd_id)
+            
+        # Quotations might be saved with vendor_id=1 due to frontend mock, so we include it
+        possible_vendor_ids.append(1)
 
-    pos = db.query(PortalPurchaseOrder).filter(
-        PortalPurchaseOrder.vendor_id.in_(possible_vendor_ids)
-    ).order_by(PortalPurchaseOrder.po_date.desc()).all()
+        pos = db.query(PortalPurchaseOrder).filter(
+            PortalPurchaseOrder.vendor_id.in_(possible_vendor_ids)
+        ).order_by(PortalPurchaseOrder.po_date.desc()).all()
 
     if not pos:
         return {
