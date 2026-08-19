@@ -1,5 +1,5 @@
 # pyrefly: ignore [missing-import]
-from fastapi import APIRouter, Depends, Header, Query, HTTPException
+from fastapi import APIRouter, Depends, Header, Query, HTTPException, BackgroundTasks
 # pyrefly: ignore [missing-import]
 from sqlalchemy.orm import Session
 # pyrefly: ignore [missing-import]
@@ -239,6 +239,7 @@ class CreateRfqBody(BaseModel):
 def create_rfq(
     pr_id: str,
     body: CreateRfqBody,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db)
 ):
     try:
@@ -317,7 +318,7 @@ def create_rfq(
                     )
                 
                 # Trigger the RFQ Invitation Email
-                asyncio.create_task(send_rfq_invitation(actual_pr_id, rfq_number, vendor_id))
+                background_tasks.add_task(send_rfq_invitation, actual_pr_id, rfq_number, vendor_id)
                     
         db.commit()
         return {"status": "success", "message": "RFQ created successfully", "rfq_number": rfq_number}
