@@ -30,7 +30,7 @@ from sqlalchemy.orm import Session
 from database import get_db
 from schemas import (
     EmailFooterOut, EmailFooterUpdate,
-    EmailTemplateOut, EmailTemplateUpdate, EmailTemplatePreviewOut,
+    EmailTemplateCreate, EmailTemplateOut, EmailTemplateUpdate, EmailTemplatePreviewOut,
     EmailTemplateTestSend, EmailTemplateTriggerRequest,
 )
 from services.email_templates import render_email_template, send_triggered_email
@@ -83,6 +83,36 @@ async def trigger_email(
 def list_templates(user_id: int = Query(...), db: Session = Depends(get_db)):
     _require_admin(user_id, db)
     return db.query(models.EmailTemplate).order_by(models.EmailTemplate.process_key, models.EmailTemplate.mail_key).all()
+
+
+@router.post("/", response_model=EmailTemplateOut)
+def create_template(
+    payload: EmailTemplateCreate,
+    user_id: int = Query(...),
+    db: Session = Depends(get_db),
+):
+    """Stores a new template row and hands back its id — subject/heading start
+    as the mail_label (the subject/heading columns are NOT NULL) and everything
+    else is blank, ready to fill in through the normal PATCH editor. Nothing
+    about this wires the mail_key up to an actual send; that's a separate,
+    later step in code (send_triggered_email(mail_key, ...) from wherever the
+    trigger point is), same as every other template today."""
+    admin = _require_admin(user_id, db)
+    if db.query(models.EmailTemplate).filter(models.EmailTemplate.mail_key == payload.mail_key).first():
+        raise HTTPException(400, f"mail_key '{payload.mail_key}' is already in use")
+    template = models.EmailTemplate(
+        process_key=payload.process_key,
+        mail_key=payload.mail_key,
+        mail_label=payload.mail_label,
+        enabled=False,
+        subject=payload.mail_label,
+        heading=payload.mail_label,
+        updated_by_id=admin.id,
+    )
+    db.add(template)
+    db.commit()
+    db.refresh(template)
+    return template
 
 
 @router.patch("/{template_id}", response_model=EmailTemplateOut)

@@ -797,6 +797,16 @@ class EmailFooterUpdate(BaseModel):
     reason_text: Optional[str] = None
     legal_line: Optional[str] = None
 
+class EmailTemplateCreate(BaseModel):
+    """Just enough to store a new template row and hand back its id — everything
+    else (subject wording, body, footer, ...) is filled in afterward through the
+    same PATCH-based editor every other template uses. No process/step/event
+    modelling: wiring a mail_key up to an actual send happens in code later,
+    the same way VO.2/VCR.1/etc. already do via send_triggered_email(mail_key, ...)."""
+    process_key: str
+    mail_key: str
+    mail_label: str
+
 class EmailTemplateOut(BaseModel):
     id: int
     process_key: str
