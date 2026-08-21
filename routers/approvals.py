@@ -1,10 +1,12 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
+from typing import Optional
 from database import get_db
 from schemas import ApprovalActionCreate, ApprovalActionOut
 from auth_utils import create_approval_token, resolve_approver
 from services.notification import notification_service
+from services.email_templates import send_triggered_email
 from workflow_snapshot import get_stage_config, member_ids as snapshot_member_ids, next_sequential_member
 from template_utils import resolve_template_variables, render_template
 import asyncio
@@ -49,6 +51,44 @@ def _fire_approval_webhook(event: str, req: models.WorkflowRequest):
             if fresh_req is None:
                 return
             await webhook_utils.fire_webhook(session, event, fresh_req)
+        finally:
+            session.close()
+
+    _run_async(_do())
+
+
+def _fire_vo5_notification(req: models.WorkflowRequest, workflow: models.Workflow, reason: Optional[str]):
+    """VO.5 "application declined" — same WorkFlow-native pattern as VO.4
+    (requests.py): request_metadata['email']/['contactName']/['vendorName']
+    are already populated by Java's submit(), so no round-trip to Java is
+    needed to reach the applicant. Only fires for the Become-a-Supplier
+    workflow (mirrors _fire_completion_notification's guard just above) —
+    every other workflow's rejection still goes through the generic
+    notify_submitter_completed email instead.
+    """
+    if getattr(workflow, "email_process_key", None) != "vendor_onboarding":
+        return
+    metadata = req.request_metadata or {}
+    to_email = metadata.get("email")
+    if not to_email:
+        return
+    # Some action-taking paths stamp a generic placeholder instead of leaving
+    # comment blank (see take_action_by_user's "Via in-app action" and the
+    # email-link flow's "Via email link") — treat those the same as no reason
+    # given, rather than surfacing internal placeholder text to the applicant.
+    if reason in (None, "Via in-app action", "Via email link", ""):
+        reason = "No specific reason was provided."
+    variables = {
+        "contact_name": metadata.get("contactName") or "there",
+        "vendor_name": metadata.get("vendorName") or "your company",
+        "reason": reason,
+    }
+
+    async def _do():
+        from database import SessionLocal
+        session = SessionLocal()
+        try:
+            await send_triggered_email(session, "VO.5", to_email, variables)
         finally:
             session.close()
 
@@ -370,6 +410,9 @@ def _check_stage_completion(db: Session, request_stage: models.RequestStage, req
             req.status = models.RequestStatus.rejected
             req.resolved_at = now
             _fire_approval_webhook("request.rejected", req)
+            rejected_actions = [a for a in required_actions if a.decision == models.ApprovalDecision.rejected]
+            reason = sorted(rejected_actions, key=lambda a: a.acted_at)[-1].comment if rejected_actions else None
+            _fire_vo5_notification(req, workflow, reason)
             return
         elif behavior == models.RejectionBehavior.restart:
             for rs in req.stages:
