@@ -1,4 +1,6 @@
+# pyrefly: ignore [missing-import]
 from fastapi import APIRouter, Depends, HTTPException, Query
+# pyrefly: ignore [missing-import]
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
 from typing import Optional
@@ -50,6 +52,28 @@ def _fire_approval_webhook(event: str, req: models.WorkflowRequest):
             fresh_req = session.query(models.WorkflowRequest).filter(models.WorkflowRequest.id == request_id).first()
             if fresh_req is None:
                 return
+                
+            # Intercept budget_upload approvals
+            if fresh_req.request_type == "budget_upload" and event in ("request.approved", "request.rejected"):
+                upload_id = fresh_req.request_metadata.get("upload_id") if fresh_req.request_metadata else None
+                if upload_id:
+                    upload = session.query(models.BudgetUpload).filter(models.BudgetUpload.id == upload_id).first()
+                    if upload and upload.status == "Pending":
+                        is_approved = (event == "request.approved")
+                        upload.status = "Approved" if is_approved else "Rejected"
+                        
+                        # Find the last approver if any, otherwise use submitter
+                        upload.decided_by = fresh_req.submitter_id
+                        upload.decided_at = datetime.utcnow()
+                        
+                        if is_approved:
+                            session.flush()
+                            from main import _try_merge_budget_cycle
+                            _try_merge_budget_cycle(session, upload.fiscal_year)
+                        else:
+                            upload.staged_rows = None
+                        session.commit()
+
             await webhook_utils.fire_webhook(session, event, fresh_req)
         finally:
             session.close()

@@ -341,7 +341,15 @@ def award_quote(
     except Exception as e:
         import logging
         logging.error(f"Failed to create PO via Java API: {e}")
-        # We continue because the quotation was successfully awarded, even if PO creation failed/delayed.
+        return {
+            "status": "error",
+            "message": f"Quotation awarded, but failed to create PO: {e}",
+            "awardedQuote": {
+                "quotationId": qid,
+                "vendorId": vq.vendor_id,
+                "status": "AWARDED"
+            }
+        }
 
     # Fetch updated data to return
     vq_awarded = db.query(VendorQuotation).filter(VendorQuotation.quotation_id == qid).first()

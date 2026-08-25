@@ -26,7 +26,7 @@ def get_purchase_orders(
             "sapVendorName": "All Vendors",
             "companyCode": "ALL",
         }
-        pos = db.query(PortalPurchaseOrder).order_by(PortalPurchaseOrder.po_date.desc()).all()
+        pos = db.query(PortalPurchaseOrder).order_by(PortalPurchaseOrder.id.desc()).all()
     else:
         vendor = db.query(VendorMaster).filter(VendorMaster.bp_no == vendor_code).first()
         if not vendor:
@@ -50,7 +50,7 @@ def get_purchase_orders(
 
         pos = db.query(PortalPurchaseOrder).filter(
             PortalPurchaseOrder.vendor_id.in_(possible_vendor_ids)
-        ).order_by(PortalPurchaseOrder.po_date.desc()).all()
+        ).order_by(PortalPurchaseOrder.id.desc()).all()
 
     if not pos:
         return {

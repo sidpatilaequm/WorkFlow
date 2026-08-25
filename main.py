@@ -28,6 +28,7 @@ GET  /api/budget-uploads        ← upload history (optional ?dept_code= / ?stat
 PATCH /api/budget-uploads/{id}/decide   ← department head approves/rejects — ALL DEPTS APPROVED WRITES THE ROWS
 """
 
+# from Workflow import models
 import random, string, io, json
 from datetime import date, datetime
 from typing import List, Optional
@@ -861,6 +862,8 @@ def _parse_budget_excel_rows(content: bytes, dept_code: str, db: Session):
 
 def _apply_staged_rows(staged_rows: list, dept_code: str, db: Session):
     cost_type_map  = {ct.tag.lower(): ct.cost_type_code for ct in db.query(CostType).all()}
+    status_map     = {s.name.lower(): s.status_code for s in db.query(Status).all()}
+    employee_map   = {e.name.lower(): e.employee_code for e in db.query(Employee).all()}
     all_projects   = db.query(Project).all()
     valid_projects = {p.project_code for p in all_projects if p.dept_code == dept_code}
     existing_wbs   = {a.wbs: a for a in db.query(Activity).all()}
@@ -875,6 +878,12 @@ def _apply_staged_rows(staged_rows: list, dept_code: str, db: Session):
             continue
 
         cost_type_code = cost_type_map.get((r.get("cost_type_tag") or "").lower()) or cost_type_map.get("opex")
+        
+        stat_val = r.get("status_code") or ""
+        stat_code = status_map.get(str(stat_val).lower()) or (stat_val if stat_val.startswith("STS-") else "STS-NS")
+        
+        emp_val = r.get("employee_code") or ""
+        emp_code = employee_map.get(str(emp_val).lower()) or (emp_val if str(emp_val).startswith("EMP-") else None)
 
         if r["wbs"] in existing_wbs:
             act = existing_wbs[r["wbs"]]
@@ -884,8 +893,8 @@ def _apply_staged_rows(staged_rows: list, dept_code: str, db: Session):
             act.po             = r["po"]
             act.invoiced       = r["invoiced"]
             act.cost_type_code = cost_type_code
-            if r["employee_code"]: act.employee_code = r["employee_code"]
-            if r["status_code"]:   act.status_code   = r["status_code"]
+            if emp_code: act.employee_code = emp_code
+            act.status_code = stat_code
             updated += 1
         else:
             act = Activity(
@@ -893,8 +902,8 @@ def _apply_staged_rows(staged_rows: list, dept_code: str, db: Session):
                 name           = r["activity_name"],
                 project_code   = r["project_code"],
                 cost_type_code = cost_type_code,
-                employee_code  = r["employee_code"] or None,
-                status_code    = r["status_code"],
+                employee_code  = emp_code,
+                status_code    = stat_code,
                 wbs            = r["wbs"],
                 is_leaf        = 1,
                 allocated      = r["allocated"],

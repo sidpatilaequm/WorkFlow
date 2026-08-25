@@ -264,15 +264,15 @@ def create_rfq(
         ).fetchone()
         
         if not existing:
-            db.execute(
+            result = db.execute(
                 text("""
                 INSERT INTO rfq (rfq_number, status, pr_id, created_at)
                 VALUES (:rfq_num, 'SENT', :pr_id, NOW())
                 """),
                 {"rfq_num": rfq_number, "pr_id": actual_pr_id}
             )
-            db.commit()
-            rfq_id = db.execute(text("SELECT LAST_INSERT_ID()")).scalar()
+            db.flush()
+            rfq_id = result.lastrowid
         else:
             rfq_id = existing[0]
 
