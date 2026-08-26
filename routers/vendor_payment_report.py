@@ -36,7 +36,11 @@ def _resolve_vendor(db: Session, bp_no: Optional[str], vendor_id: Optional[int])
 
 def _vendor_header(db: Session, vendor_id: int) -> Dict[str, Any]:
     row = db.execute(
-        text("SELECT bp_no, name, gst_number, company_code FROM vendor_master WHERE vendor_id = :vid"),
+        text(
+            "SELECT vm.bp_no, sr.vendor_name AS name, sr.gst_number AS gst_number, vm.bp_no AS company_code "
+            "FROM vendor_master vm LEFT JOIN supplier_registration sr ON vm.supplier_registration_id = sr.id "
+            "WHERE vm.vendor_id = :vid"
+        ),
         {"vid": vendor_id},
     ).mappings().first()
     return dict(row) if row else {}

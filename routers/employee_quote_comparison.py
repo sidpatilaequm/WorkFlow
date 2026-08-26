@@ -39,7 +39,10 @@ def resolve_vendor_names(db, vendor_ids):
     out = {}
     if not vendor_ids:
         return out
-    for r in safe_rows(db, "SELECT vendor_id, bp_no, name FROM vendor_master WHERE vendor_id IN :v",
+    for r in safe_rows(db,
+                       "SELECT vm.vendor_id, vm.bp_no, sr.vendor_name AS name "
+                       "FROM vendor_master vm LEFT JOIN supplier_registration sr ON vm.supplier_registration_id = sr.id "
+                       "WHERE vm.vendor_id IN :v",
                        {"v": tuple(vendor_ids)}):
         out[r["vendor_id"]] = {"code": r["bp_no"], "name": r["name"]}
     missing = [v for v in vendor_ids if v not in out]

@@ -864,21 +864,28 @@ class BudgetUpload(Base):
 
 class VendorMaster(Base):
     __tablename__ = "vendor_master"
-    
+
     vendor_id = Column(Integer, primary_key=True, index=True)
     bp_no = Column(String(255), unique=True)
-    name = Column(String(255))
-    gst_number = Column(String(255))
-    pan = Column(String(255))
-    company_code = Column(String(255))
-    email = Column(String(255), nullable=True)          # vendor login email
-    city_name = Column(String(255), nullable=True)      # city
-    sap_created_on = Column(Date)
-    sap_changed_on = Column(Date)
+    supplier_registration_id = Column(Integer, ForeignKey("supplier_registration.id"), nullable=True)
     sys_created_date = Column(DateTime)
     sys_modified_date = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     addresses = relationship("VendorAddress", back_populates="vendor")
+    supplier_registration = relationship("SupplierRegistration")
+
+
+class SupplierRegistration(Base):
+    """Read-only mirror of backend_java's SupplierRegistration — this is the real source of a
+    vendor's name/GST/PAN now (see VendorMaster.supplier_registration_id above). Only the columns
+    WorkFlow actually reads are mapped; backend_java owns writes to this table."""
+    __tablename__ = "supplier_registration"
+
+    id = Column(Integer, primary_key=True, index=True)
+    vendor_name = Column(String(255))
+    email = Column(String(255))
+    gst_number = Column(String(255))
+    pan_number = Column(String(255))
 
 class VendorAddress(Base):
     __tablename__ = "vendor_address"

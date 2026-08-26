@@ -6,7 +6,7 @@ from datetime import date, datetime
 import uuid
 
 from database import get_db
-from models import VendorMaster, VendorAddress
+from models import VendorMaster, VendorAddress, SupplierRegistration
 
 router = APIRouter(prefix="/api/vendors", tags=["Vendors"])
 
@@ -22,11 +22,6 @@ class VendorAddressCreate(BaseModel):
 
 class VendorMasterCreate(BaseModel):
     bp_no: str
-    name: str
-    gst_number: Optional[str] = None
-    pan: Optional[str] = None
-    company_code: Optional[str] = None
-    sap_created_on: Optional[date] = None
     addresses: List[VendorAddressCreate] = []
 
 @router.post("/", status_code=status.HTTP_201_CREATED)
@@ -35,27 +30,24 @@ def create_vendor_master(vendor_data: VendorMasterCreate, db: Session = Depends(
     existing = db.query(VendorMaster).filter(VendorMaster.bp_no == vendor_data.bp_no).first()
     if existing:
         raise HTTPException(status_code=400, detail="Vendor with this BP number already exists")
-    
-    # Create vendor master
+
+    # Name/GST/PAN/company code no longer live on this table — a vendor created here has no
+    # SupplierRegistration to link to (that's the Become-a-Supplier flow's own provisioning,
+    # owned by backend_java), so it's just a bare bp_no record until/unless something links it.
     new_vendor = VendorMaster(
         bp_no=vendor_data.bp_no,
-        name=vendor_data.name,
-        gst_number=vendor_data.gst_number,
-        pan=vendor_data.pan,
-        company_code=vendor_data.company_code,
-        sap_created_on=vendor_data.sap_created_on or date.today(),
         sys_created_date=datetime.utcnow()
     )
-    
+
     db.add(new_vendor)
     db.commit()
     db.refresh(new_vendor)
-    
+
     # Create associated addresses
     for addr in vendor_data.addresses:
         # Generate a unique address_id if not provided
         addr_id = addr.address_id or f"ADDR-{uuid.uuid4().hex[:8].upper()}"
-        
+
         new_address = VendorAddress(
             address_id=addr_id,
             address_type=addr.address_type,
@@ -68,28 +60,40 @@ def create_vendor_master(vendor_data: VendorMasterCreate, db: Session = Depends(
             vendor_id=new_vendor.vendor_id
         )
         db.add(new_address)
-    
+
     if vendor_data.addresses:
         db.commit()
-        
+
     return {"message": "Vendor created successfully", "vendor_id": new_vendor.vendor_id}
 
 @router.get("/all")
 def get_all_vendors(db: Session = Depends(get_db)):
-    vendors = db.query(VendorMaster).all()
-    return [{"vendor_id": v.vendor_id, "bp_no": v.bp_no, "name": v.name, "email": v.email} for v in vendors]
+    rows = db.query(VendorMaster, SupplierRegistration).outerjoin(
+        SupplierRegistration, VendorMaster.supplier_registration_id == SupplierRegistration.id
+    ).all()
+    return [
+        {
+            "vendor_id": v.vendor_id,
+            "bp_no": v.bp_no,
+            "name": reg.vendor_name if reg else None,
+            "email": reg.email if reg else None,
+        }
+        for v, reg in rows
+    ]
 
 @router.get("/{vendor_id}")
 def get_vendor(vendor_id: int, db: Session = Depends(get_db)):
-    vendor = db.query(VendorMaster).filter(VendorMaster.vendor_id == vendor_id).first()
-    if not vendor:
+    row = db.query(VendorMaster, SupplierRegistration).outerjoin(
+        SupplierRegistration, VendorMaster.supplier_registration_id == SupplierRegistration.id
+    ).filter(VendorMaster.vendor_id == vendor_id).first()
+    if not row:
         raise HTTPException(status_code=404, detail="Vendor not found")
-    
+    vendor, reg = row
+
     return {
         "vendor_id": vendor.vendor_id,
         "bp_no": vendor.bp_no,
-        "name": vendor.name,
-        "gst_number": vendor.gst_number,
-        "pan": vendor.pan,
-        "company_code": vendor.company_code
+        "name": reg.vendor_name if reg else None,
+        "gst_number": reg.gst_number if reg else None,
+        "pan": reg.pan_number if reg else None,
     }

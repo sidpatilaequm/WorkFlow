@@ -19,7 +19,11 @@ def get_vendor_material_list(request: Request, db: Session = Depends(get_db)):
         params["vendor_id"] = vendor_id
         
         # Get vendor details
-        v_query = "SELECT bp_no, name FROM vendor_master WHERE vendor_id = :vendor_id"
+        v_query = (
+            "SELECT vm.bp_no, sr.vendor_name AS name "
+            "FROM vendor_master vm LEFT JOIN supplier_registration sr ON vm.supplier_registration_id = sr.id "
+            "WHERE vm.vendor_id = :vendor_id"
+        )
         try:
             v_row = db.execute(text(v_query), {"vendor_id": vendor_id}).fetchone()
             if v_row:

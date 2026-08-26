@@ -27,10 +27,11 @@ def get_quotation_report(
         if not vendor:
             raise HTTPException(status_code=404, detail=f"Vendor {vendor_code} not found")
     
+    reg = vendor.supplier_registration
     vendor_info = {
         "sapVendorCode": vendor.bp_no,
-        "sapVendorName": vendor.name,
-        "companyCode": vendor.company_code
+        "sapVendorName": reg.vendor_name if reg else None,
+        "companyCode": vendor.bp_no
     }
 
     # 2. Fetch Quotations for this vendor
@@ -101,7 +102,7 @@ def get_quotation_report(
             "prNumber": actual_pr_number,
             "prDate": str(q.created_date) if q.created_date else "",
             "quoteStatus": "WON" if q.status == "AWARDED" else (q.status or "Pending"),
-            "companyCode": vendor.company_code,
+            "companyCode": vendor.bp_no,
             "items": items,
             "compliance": compliance
         })
@@ -238,7 +239,8 @@ def get_all_quotations(db: Session = Depends(get_db)):
         if not vendor:
             vendor = db.query(VendorMaster).filter(VendorMaster.vendor_id == q.vendor_id).first()
             
-        vendor_name = vendor.name if vendor else f"Vendor-{q.vendor_id}"
+        vendor_name = (vendor.supplier_registration.vendor_name if vendor and vendor.supplier_registration else None) \
+            or (f"Vendor-{q.vendor_id}")
         
         # Calculate totals and build line_items
         items_db = db.query(VendorQuotationItem).filter(VendorQuotationItem.quotation_id == q.quotation_id).all()

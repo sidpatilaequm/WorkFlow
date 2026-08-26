@@ -65,10 +65,11 @@ def get_purchase_requisitions(
         if not vendor:
             raise HTTPException(status_code=404, detail=f"Vendor {vendor_code} not found")
 
+    reg = vendor.supplier_registration
     vendor_info = {
         "sapVendorCode": vendor.bp_no,
-        "sapVendorName": vendor.name,
-        "companyCode": vendor.company_code
+        "sapVendorName": reg.vendor_name if reg else None,
+        "companyCode": vendor.bp_no
     }
 
     # Retrieve the company_id which might be used as vendor_id by the frontend API
@@ -389,7 +390,15 @@ def action_purchase_requisition(
 @router.get("/all-vendors")
 def get_all_vendors_for_rfq(db: Session = Depends(get_db)):
     vendors = db.query(VendorMaster).all()
-    return [{"vendor_id": v.vendor_id, "bp_no": v.bp_no, "vendor_name": v.name, "email": v.email} for v in vendors]
+    return [
+        {
+            "vendor_id": v.vendor_id,
+            "bp_no": v.bp_no,
+            "vendor_name": v.supplier_registration.vendor_name if v.supplier_registration else None,
+            "email": v.supplier_registration.email if v.supplier_registration else None,
+        }
+        for v in vendors
+    ]
 
 import random
 
@@ -425,11 +434,12 @@ def get_vendor_selection_list(pr_number: str = None, material_code: str = None, 
         all_vendors_db = db.query(VendorMaster).all()
 
         def format_vendor(v):
+            reg = v.supplier_registration
             return {
                 "vendor_id": v.vendor_id,
                 "bp_no": v.bp_no,
-                "vendor_name": v.name,
-                "email": v.email,
+                "vendor_name": reg.vendor_name if reg else None,
+                "email": reg.email if reg else None,
                 "response_rate": "100% in SLA",
                 "avg_quote_time": f"{round(random.uniform(0.5, 2.5), 1)} days",
                 "price_index": str(round(random.uniform(0.8, 1.2), 2)),

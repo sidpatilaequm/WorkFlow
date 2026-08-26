@@ -32,10 +32,11 @@ def get_purchase_orders(
         if not vendor:
             raise HTTPException(status_code=404, detail=f"Vendor {vendor_code} not found")
 
+        reg = vendor.supplier_registration
         vendor_info = {
             "sapVendorCode": vendor.bp_no,
-            "sapVendorName": vendor.name,
-            "companyCode": vendor.company_code,
+            "sapVendorName": reg.vendor_name if reg else None,
+            "companyCode": vendor.bp_no,
         }
 
         from sqlalchemy import text

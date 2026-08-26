@@ -320,9 +320,9 @@ def get_purchase_order_report(
         rows = db.execute(text(f"""
             SELECT ppo.po_number AS po_no,
                    ppo.status AS po_status,
-                   COALESCE(vm.name, cd.company_name) AS vendor,
+                   COALESCE(sr.vendor_name, cd.company_name) AS vendor,
                    COALESCE(vm.bp_no, cd.company_code) AS vendor_code,
-                   'Portal PO' AS po_type, 
+                   'Portal PO' AS po_type,
                    'Portal PO' AS po_type_text,
                    ppo.grand_total AS value,
                    ppo.po_date AS released,
@@ -332,6 +332,7 @@ def get_purchase_order_report(
             FROM portal_purchase_orders ppo
             LEFT JOIN company_details cd ON ppo.vendor_id = cd.company_id
             LEFT JOIN vendor_master vm ON (ppo.vendor_id = vm.vendor_id OR cd.company_code = vm.bp_no)
+            LEFT JOIN supplier_registration sr ON vm.supplier_registration_id = sr.id
             WHERE {{where_clause}}
             ORDER BY ppo.po_date DESC 
             LIMIT :limit
