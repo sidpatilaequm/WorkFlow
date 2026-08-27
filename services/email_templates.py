@@ -68,12 +68,15 @@ def _paragraphs(text: Optional[str], variables: dict) -> str:
     return "".join(out)
 
 
-def render_email_template(template: "models.EmailTemplate", variables: dict) -> tuple[str, str, str]:
+def render_email_template(template: "models.EmailTemplate", variables: dict, tone_override: Optional[str] = None) -> tuple[str, str, str]:
     """Returns (subject, html_body, text_body) for one EmailTemplate row,
     rendering every {{merge_tag}} field against `variables` merged with the
-    server-side globals (portal_url, company_name)."""
+    server-side globals (portal_url, company_name). `tone_override`, when a
+    valid tone name, wins over the template's own status_strip_tone — for a
+    template shared across multiple outcomes (e.g. VCR.2's approve/reject),
+    the caller knows which one this particular send actually is."""
     v = {**_global_variables(), **(variables or {})}
-    tone = _TONES.get(template.status_strip_tone or "info", _TONES["info"])
+    tone = _TONES.get(tone_override) or _TONES.get(template.status_strip_tone or "info", _TONES["info"])
 
     footer = template.footer
     if template.footer_override_reason:
@@ -198,7 +201,7 @@ def render_email_template(template: "models.EmailTemplate", variables: dict) -> 
     return subject, html_body, text_body
 
 
-async def send_triggered_email(db: Session, mail_key: str, to_email: str, variables: dict) -> bool:
+async def send_triggered_email(db: Session, mail_key: str, to_email: str, variables: dict, tone_override: Optional[str] = None) -> bool:
     """Look up an email_templates row by mail_key, render it, and send it.
     No-ops (logged) when the row is missing or disabled — an admin turning a
     mail off must silently stop it, not error the caller's request flow."""
@@ -213,5 +216,5 @@ async def send_triggered_email(db: Session, mail_key: str, to_email: str, variab
         logger.warning("send_triggered_email: no recipient for mail_key=%s", mail_key)
         return False
 
-    subject, html_body, text_body = render_email_template(template, variables)
+    subject, html_body, text_body = render_email_template(template, variables, tone_override=tone_override)
     return await notification_service.send_email(to=[to_email], subject=subject, html_body=html_body, text_body=text_body)

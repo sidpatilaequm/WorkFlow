@@ -529,6 +529,26 @@ class EmailTemplate(Base):
     updated_by  = relationship("User")
 
 
+class EmailTemplateRevision(Base):
+    """
+    A snapshot of one EmailTemplate row taken immediately before an admin's edit overwrites it —
+    inserted by routers/email_templates.py:update_template right before applying the incoming
+    PATCH. Without this, editing a live template silently loses whatever it said before; this
+    makes "what did the email that went out 3 months ago actually say" answerable, and gives
+    admins an undo path.
+    """
+    __tablename__ = "email_template_revisions"
+
+    id            = Column(Integer, primary_key=True, index=True)
+    template_id   = Column(Integer, ForeignKey("email_templates.id", ondelete="CASCADE"), nullable=False, index=True)
+    snapshot      = Column(JSON, nullable=False)  # full column dump of the row as it was before this change
+    changed_by_id = Column(BigInteger, ForeignKey("user_details.user_id"), nullable=True)
+    changed_at    = Column(DateTime(timezone=True), server_default=func.now())
+
+    template    = relationship("EmailTemplate")
+    changed_by  = relationship("User")
+
+
 # --- BUDGET MODELS ---
 
 """

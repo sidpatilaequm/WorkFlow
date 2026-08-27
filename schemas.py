@@ -829,6 +829,7 @@ class EmailTemplateOut(BaseModel):
     footer_override_reason: Optional[str] = None
     footer_override_legal: Optional[str] = None
     sample_data: Optional[Any] = None
+    updated_at: Optional[datetime] = None
     class Config:
         from_attributes = True
 
@@ -850,6 +851,19 @@ class EmailTemplateUpdate(BaseModel):
     footer_override_reason: Optional[str] = None
     footer_override_legal: Optional[str] = None
     sample_data: Optional[dict] = None
+    # Optimistic concurrency: pass back the updated_at this edit was loaded against. If the row
+    # has since changed (someone else saved in between), the update is rejected with a 409
+    # instead of silently overwriting their edit. Omit (None) to skip the check.
+    expected_updated_at: Optional[datetime] = None
+
+class EmailTemplateRevisionOut(BaseModel):
+    id: int
+    changed_at: datetime
+    changed_by_id: Optional[int] = None
+    changed_by_email: Optional[str] = None
+    snapshot: dict
+    class Config:
+        from_attributes = True
 
 class EmailTemplatePreviewOut(BaseModel):
     subject: str
@@ -862,3 +876,8 @@ class EmailTemplateTestSend(BaseModel):
 class EmailTemplateTriggerRequest(BaseModel):
     to_email: EmailStr
     variables: dict = {}
+    # Optional per-send override of the template's status_strip_tone — e.g. VCR.2 is one
+    # template shared by both "change approved" and "change rejected", and a single fixed
+    # tone column can't reflect which actually happened on a given send. None (the default)
+    # keeps today's behaviour: use the template row's own status_strip_tone.
+    tone_override: Optional[str] = None

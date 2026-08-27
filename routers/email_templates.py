@@ -31,9 +31,10 @@ from database import get_db
 from schemas import (
     EmailFooterOut, EmailFooterUpdate,
     EmailTemplateCreate, EmailTemplateOut, EmailTemplateUpdate, EmailTemplatePreviewOut,
-    EmailTemplateTestSend, EmailTemplateTriggerRequest,
+    EmailTemplateTestSend, EmailTemplateTriggerRequest, EmailTemplateRevisionOut,
 )
 from services.email_templates import render_email_template, send_triggered_email
+from template_utils import extract_placeholders
 import models
 
 router = APIRouter()
@@ -62,6 +63,41 @@ def _get_template_or_404(template_id: int, db: Session) -> models.EmailTemplate:
     return template
 
 
+# Server-side globals every render always has (services/email_templates.py's
+# _global_variables()) — a template can reference these without them appearing in its own
+# sample_data.
+_GLOBAL_VARIABLES = {"portal_url", "company_name"}
+
+
+def _template_snapshot(template: models.EmailTemplate) -> dict:
+    """Full column dump of a row, JSON-safe — used both as the "current row" view merged with
+    an incoming PATCH (for placeholder validation) and as the stored revision snapshot."""
+    snap = {}
+    for col in template.__table__.columns.keys():
+        val = getattr(template, col)
+        if hasattr(val, "isoformat"):
+            val = val.isoformat()
+        snap[col] = val
+    return snap
+
+
+def _used_placeholders(fields: dict) -> set:
+    used = set()
+    for f in ("subject", "preheader", "heading", "intro", "cta_label", "cta_url", "outro"):
+        used |= extract_placeholders(fields.get(f))
+    for row in (fields.get("detail_rows") or []):
+        if row:
+            for cell in row:
+                used |= extract_placeholders(cell)
+    return used
+
+
+def _same_moment(a, b) -> bool:
+    if a is None or b is None:
+        return a is None and b is None
+    return a.replace(microsecond=0, tzinfo=None) == b.replace(microsecond=0, tzinfo=None)
+
+
 # ─── Server-to-server trigger (backend_java) ────────────────────────────────
 
 @router.post("/trigger/{mail_key}")
@@ -73,7 +109,7 @@ async def trigger_email(
 ):
     if not JAVA_SERVICE_TOKEN or x_service_token != JAVA_SERVICE_TOKEN:
         raise HTTPException(401, "Invalid or missing service token")
-    sent = await send_triggered_email(db, mail_key, payload.to_email, payload.variables)
+    sent = await send_triggered_email(db, mail_key, payload.to_email, payload.variables, tone_override=payload.tone_override)
     return {"sent": sent}
 
 
@@ -124,12 +160,75 @@ def update_template(
 ):
     admin = _require_admin(user_id, db)
     template = _get_template_or_404(template_id, db)
-    for field, val in payload.dict(exclude_unset=True).items():
+
+    updates = payload.dict(exclude_unset=True)
+    updates.pop("expected_updated_at", None)
+
+    # Optimistic concurrency: reject a save based on a stale copy instead of silently
+    # last-write-wins clobbering whatever another admin saved in between. Skipped when the
+    # caller doesn't send expected_updated_at (e.g. an older client) — opt-in, not enforced.
+    if payload.expected_updated_at is not None and not _same_moment(template.updated_at, payload.expected_updated_at):
+        raise HTTPException(
+            409,
+            "This template was changed by someone else since you loaded it. Refresh the page "
+            "and reapply your edits.",
+        )
+
+    if "footer_id" in updates and updates["footer_id"] is not None:
+        if not db.query(models.EmailFooter).filter(models.EmailFooter.id == updates["footer_id"]).first():
+            raise HTTPException(400, f"Footer id {updates['footer_id']} does not exist.")
+
+    # Validate every {{placeholder}} used against Sample data (merging the current row with
+    # this PATCH, so editing just one field still validates the template's real full content) —
+    # an unknown one renders as literal "{{typo}}" text in the live email rather than the
+    # intended value.
+    merged = _template_snapshot(template)
+    merged.update(updates)
+    sample_data = merged.get("sample_data") or {}
+    unknown = _used_placeholders(merged) - set(sample_data.keys()) - _GLOBAL_VARIABLES
+    if unknown:
+        raise HTTPException(
+            400,
+            "These placeholders aren't in Sample data, so they'd render as literal text in the "
+            f"live email instead of a real value: {', '.join(sorted(unknown))}. Add them to "
+            "Sample data with an example value, or fix the typo.",
+        )
+
+    # Snapshot the row as it stood right before this edit overwrites it.
+    db.add(models.EmailTemplateRevision(
+        template_id=template.id,
+        snapshot=_template_snapshot(template),
+        changed_by_id=admin.id,
+    ))
+
+    for field, val in updates.items():
         setattr(template, field, val)
     template.updated_by_id = admin.id
     db.commit()
     db.refresh(template)
     return template
+
+
+@router.get("/{template_id}/revisions", response_model=List[EmailTemplateRevisionOut])
+def list_revisions(template_id: int, user_id: int = Query(...), db: Session = Depends(get_db)):
+    _require_admin(user_id, db)
+    _get_template_or_404(template_id, db)
+    revisions = (
+        db.query(models.EmailTemplateRevision)
+        .filter(models.EmailTemplateRevision.template_id == template_id)
+        .order_by(models.EmailTemplateRevision.changed_at.desc())
+        .all()
+    )
+    return [
+        EmailTemplateRevisionOut(
+            id=r.id,
+            changed_at=r.changed_at,
+            changed_by_id=r.changed_by_id,
+            changed_by_email=r.changed_by.email if r.changed_by else None,
+            snapshot=r.snapshot,
+        )
+        for r in revisions
+    ]
 
 
 @router.post("/{template_id}/preview", response_model=EmailTemplatePreviewOut)

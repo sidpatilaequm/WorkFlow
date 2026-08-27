@@ -116,6 +116,13 @@ def resolve_template_variables(request, workflow) -> dict:
     return variables
 
 
+def extract_placeholders(text: Optional[str]) -> set:
+    """Return the set of {{name}} placeholder names referenced in `text`."""
+    if not text:
+        return set()
+    return set(_PLACEHOLDER_RE.findall(text))
+
+
 def render_template(text: Optional[str], variables: dict) -> Optional[str]:
     """Replace {{name}} placeholders in `text` using `variables`. Unknown
     placeholders are left untouched rather than raising."""

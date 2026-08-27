@@ -2,6 +2,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 # pyrefly: ignore [missing-import]
 from sqlalchemy.orm import Session
+from sqlalchemy import update
 from datetime import datetime, timedelta
 from typing import Optional
 from database import get_db
@@ -431,6 +432,19 @@ def _check_stage_completion(db: Session, request_stage: models.RequestStage, req
 
         if behavior == models.RejectionBehavior.stop:
             request_stage.status = models.RequestStatus.rejected
+            # Atomic claim: an UPDATE ... WHERE status='pending' takes a row lock immediately
+            # and only ever matches once, even if two reject actions land at nearly the same
+            # instant — the loser sees rowcount 0 and skips the webhook/VO.5 email entirely,
+            # rather than both callers reading status='pending' before either commits and both
+            # firing (same pattern as SupplierChangeRequestRepository.markDecided on the Java
+            # side, applied here for the request-level rejection webhook + email).
+            claimed = db.execute(
+                update(models.WorkflowRequest)
+                .where(models.WorkflowRequest.id == req.id, models.WorkflowRequest.status == models.RequestStatus.pending)
+                .values(status=models.RequestStatus.rejected, resolved_at=now)
+            ).rowcount
+            if claimed == 0:
+                return
             req.status = models.RequestStatus.rejected
             req.resolved_at = now
             _fire_approval_webhook("request.rejected", req)
