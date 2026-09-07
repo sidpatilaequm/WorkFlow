@@ -1094,3 +1094,21 @@ class PortalASNItem(Base):
 
     asn = relationship("PortalASN", back_populates="items")
 
+
+class OrgConfig(Base):
+    """Read-only mirror of backend_java's org_config table (single row, id=1) — org-wide
+    procurement-stage toggles. WorkFlow only reads this (backend_java's admin-gated endpoints
+    own writes); see org_config.py for the actual "is this stage on" check other routers use."""
+    __tablename__ = "org_config"
+
+    id = Column(BigInteger, primary_key=True)
+    vendor_onboarding_enabled = Column(Boolean, default=True)
+    pr_to_po_enabled = Column(Boolean, default=True)
+    goods_receipt_warehouse_enabled = Column(Boolean, default=True)
+    gate_entry_show_to_vendor_enabled = Column(Boolean, default=True)
+    invoice_verification_enabled = Column(Boolean, default=True)
+    vendor_payments_enabled = Column(Boolean, default=True)
+    vendor_returns_enabled = Column(Boolean, default=True)
+    credit_notes_enabled = Column(Boolean, default=True)
+    budgeting_enabled = Column(Boolean, default=True)
+

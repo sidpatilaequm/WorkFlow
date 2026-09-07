@@ -52,6 +52,7 @@ from models import (
     BudgetVersion, FiscalPeriod, Transfer, ChangeRequest,
     BudgetUpload,
 )
+from org_config import is_enabled
 from schemas import (
     OrganisationOut,
     DepartmentCreate, DepartmentOut, DepartmentSetHead,
@@ -334,6 +335,8 @@ def list_activities(
 
 @app.post("/api/activities", response_model=ActivityOut, status_code=201)
 def create_activity(body: ActivityCreate, db: Session = Depends(get_db)):
+    if not is_enabled(db, "budgeting_enabled"):
+        raise HTTPException(400, "Budgeting is currently disabled by your organisation.")
     act = Activity(activity_code=_uid("ACT-"), **body.model_dump())
     db.add(act); db.commit(); db.refresh(act)
     return _enrich_activity(
@@ -346,6 +349,8 @@ def create_activity(body: ActivityCreate, db: Session = Depends(get_db)):
 
 @app.patch("/api/activities/{code}", response_model=ActivityOut)
 def update_activity(code: str, body: ActivityUpdate, db: Session = Depends(get_db)):
+    if not is_enabled(db, "budgeting_enabled"):
+        raise HTTPException(400, "Budgeting is currently disabled by your organisation.")
     act = db.query(Activity).filter(Activity.activity_code == code).first()
     if not act: raise HTTPException(404, "Activity not found")
     for k, v in body.model_dump(exclude_none=True).items():
@@ -361,6 +366,8 @@ def update_activity(code: str, body: ActivityUpdate, db: Session = Depends(get_d
 
 @app.delete("/api/activities/{code}", status_code=204)
 def delete_activity(code: str, db: Session = Depends(get_db)):
+    if not is_enabled(db, "budgeting_enabled"):
+        raise HTTPException(400, "Budgeting is currently disabled by your organisation.")
     act = db.query(Activity).filter(Activity.activity_code == code).first()
     if not act: raise HTTPException(404, "Activity not found")
     # Guard: block delete if the activity carries real budget/spend/commitments
@@ -391,6 +398,8 @@ def list_sub_activities(parent_activity_code: Optional[str] = Query(None), db: S
 
 @app.post("/api/sub-activities", response_model=SubActivityOut, status_code=201)
 def create_sub_activity(body: SubActivityCreate, db: Session = Depends(get_db)):
+    if not is_enabled(db, "budgeting_enabled"):
+        raise HTTPException(400, "Budgeting is currently disabled by your organisation.")
     if body.level < 1 or body.level > 3:
         raise HTTPException(400, "level must be 1, 2, or 3")
     sa = SubActivity(subactivity_code=_uid("SACT-"), **body.model_dump())
@@ -404,6 +413,8 @@ def create_sub_activity(body: SubActivityCreate, db: Session = Depends(get_db)):
 
 @app.patch("/api/sub-activities/{code}", response_model=SubActivityOut)
 def update_sub_activity(code: str, body: SubActivityUpdate, db: Session = Depends(get_db)):
+    if not is_enabled(db, "budgeting_enabled"):
+        raise HTTPException(400, "Budgeting is currently disabled by your organisation.")
     sa = db.query(SubActivity).filter(SubActivity.subactivity_code == code).first()
     if not sa: raise HTTPException(404, "Sub-activity not found")
     for k, v in body.model_dump(exclude_none=True).items():
@@ -418,6 +429,8 @@ def update_sub_activity(code: str, body: SubActivityUpdate, db: Session = Depend
 
 @app.delete("/api/sub-activities/{code}", status_code=204)
 def delete_sub_activity(code: str, db: Session = Depends(get_db)):
+    if not is_enabled(db, "budgeting_enabled"):
+        raise HTTPException(400, "Budgeting is currently disabled by your organisation.")
     sa = db.query(SubActivity).filter(SubActivity.subactivity_code == code).first()
     if not sa: raise HTTPException(404, "Sub-activity not found")
     if sa.allocated or sa.pr or sa.po or sa.invoiced or sa.approved:
@@ -435,12 +448,16 @@ def list_budget_versions(db: Session = Depends(get_db)):
     return versions
 @app.post("/api/budget-versions", response_model=BudgetVersionOut, status_code=201)
 def create_budget_version(body: BudgetVersionCreate, db: Session = Depends(get_db)):
+    if not is_enabled(db, "budgeting_enabled"):
+        raise HTTPException(400, "Budgeting is currently disabled by your organisation.")
     bv = BudgetVersion(version_code=_uid("BV-"), **body.model_dump())
     db.add(bv); db.commit(); db.refresh(bv)
     return bv
 
 @app.patch("/api/budget-versions/{code}/set-active", response_model=BudgetVersionOut)
 def set_active_version(code: str, db: Session = Depends(get_db)):
+    if not is_enabled(db, "budgeting_enabled"):
+        raise HTTPException(400, "Budgeting is currently disabled by your organisation.")
     db.query(BudgetVersion).update({"is_current": 0})
     bv = db.query(BudgetVersion).filter(BudgetVersion.version_code == code).first()
     if not bv: raise HTTPException(404, "Budget version not found")
@@ -450,6 +467,8 @@ def set_active_version(code: str, db: Session = Depends(get_db)):
 
 @app.patch("/api/budget-versions/{code}/toggle-lock", response_model=BudgetVersionOut)
 def toggle_lock(code: str, db: Session = Depends(get_db)):
+    if not is_enabled(db, "budgeting_enabled"):
+        raise HTTPException(400, "Budgeting is currently disabled by your organisation.")
     bv = db.query(BudgetVersion).filter(BudgetVersion.version_code == code).first()
     if not bv: raise HTTPException(404, "Budget version not found")
     bv.is_locked = 0 if bv.is_locked else 1
@@ -1029,6 +1048,8 @@ async def upload_budget_excel(
     requested_by: Optional[str] = Form(None),
     db: Session = Depends(get_db),
 ):
+    if not is_enabled(db, "budgeting_enabled"):
+        raise HTTPException(400, "Budgeting is currently disabled by your organisation.")
     if not file.filename.endswith((".xlsx", ".xls")):
         raise HTTPException(400, "Only .xlsx or .xls files are accepted")
 
@@ -1100,6 +1121,8 @@ def list_budget_uploads(
 
 @app.patch("/api/budget-uploads/{upload_id}/decide", response_model=BudgetUploadOut)
 def decide_budget_upload(upload_id: str, body: BudgetUploadDecide, db: Session = Depends(get_db)):
+    if not is_enabled(db, "budgeting_enabled"):
+        raise HTTPException(400, "Budgeting is currently disabled by your organisation.")
     upload = db.query(BudgetUpload).filter(BudgetUpload.id == upload_id).first()
     if not upload:
         raise HTTPException(404, "Budget upload not found")

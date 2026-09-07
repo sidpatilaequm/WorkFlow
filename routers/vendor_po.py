@@ -5,6 +5,7 @@ from database import get_db
 from models import VendorMaster, PortalPurchaseOrder, PortalPurchaseOrderItem, VendorQuotation, VendorQuotationItem
 from pydantic import BaseModel
 from datetime import datetime
+from org_config import is_enabled
 
 class PoCreateRequest(BaseModel):
     deliveryAddress: str = ""
@@ -120,6 +121,9 @@ def create_po_from_quotation(
     request: PoCreateRequest,
     db: Session = Depends(get_db)
 ):
+    if not is_enabled(db, "pr_to_po_enabled"):
+        raise HTTPException(status_code=400, detail="PR to PO is currently disabled by your organisation.")
+
     import re
     numeric_qtn_id = int(re.sub(r'\D', '', qtn_id)) if re.sub(r'\D', '', qtn_id) else 0
     
