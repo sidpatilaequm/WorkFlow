@@ -38,6 +38,9 @@ Priority:
 
 Env file selection:
   Set APP_ENV=localtest to load .env.localtest (SQLite, no MySQL needed).
+  Set APP_ENV=serverdb to load .env.serverdb (production DB via SSH tunnel — see
+  .env.serverdb.example and ../connect-server-db.sh).
+  Any other APP_ENV=<name> loads .env.<name>; unset loads plain .env.
 """
 
 import os
@@ -49,10 +52,7 @@ from sqlalchemy.orm import sessionmaker
 _base_dir = Path(__file__).parent
 _app_env  = os.getenv("APP_ENV", "")
 
-if _app_env == "localtest":
-    _env_file = _base_dir / ".env.localtest"
-else:
-    _env_file = _base_dir / ".env"
+_env_file = _base_dir / (f".env.{_app_env}" if _app_env else ".env")
 
 load_dotenv(dotenv_path=_env_file, override=True)
 print(f"[database] Loaded env from: {_env_file}")
