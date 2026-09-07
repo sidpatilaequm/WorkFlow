@@ -268,7 +268,8 @@ def create_department(body: DepartmentCreate, db: Session = Depends(get_db)):
     # dedicated /set-head endpoint below, once the department (and its head's Employee row,
     # if new) actually exist. Referencing body.head_employee_code here always 500'd since
     # the field was never on the schema in the first place.
-    dept = Department(dept_code=_uid("DEPT-"), name=body.name, org_code=body.org_code, wbs=body.wbs)
+    dept = Department(dept_code=_uid("DEPT-"), name=body.name, dept_name=body.name,
+                       org_code=body.org_code, wbs=body.wbs)
     db.add(dept); db.commit(); db.refresh(dept)
     return dept
 

@@ -587,6 +587,12 @@ class Department(Base):
 
     dept_code         = Column(String(20),  primary_key=True)
     name              = Column(String(120), nullable=False)
+    # backend_java's own Department JPA entity maps this same physical column as its "name"
+    # field (entity/Department.java: @Column(name = "dept_name"), NOT NULL) — both ORMs manage
+    # the same `department` table with different column names for the same concept. Kept in
+    # sync with `name` on write (see create_department) so backend_java's own /api/departments
+    # (used by User Management's department picker) sees a real value instead of NULL.
+    dept_name         = Column(String(120), nullable=False)
     org_code          = Column(String(20),  ForeignKey("organisation.org_code"), nullable=False)
     wbs               = Column(String(20),  nullable=False)
     head_employee_code = Column(String(20), ForeignKey("employee.employee_code"), nullable=True)
