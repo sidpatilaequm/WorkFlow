@@ -264,8 +264,11 @@ def list_departments(db: Session = Depends(get_db)):
 
 @app.post("/api/departments", response_model=DepartmentOut, status_code=201)
 def create_department(body: DepartmentCreate, db: Session = Depends(get_db)):
-    dept = Department(dept_code=_uid("DEPT-"), name=body.name, org_code=body.org_code,
-                       wbs=body.wbs, head_employee_code=body.head_employee_code)
+    # DepartmentCreate never collects head_employee_code — that's set afterward via the
+    # dedicated /set-head endpoint below, once the department (and its head's Employee row,
+    # if new) actually exist. Referencing body.head_employee_code here always 500'd since
+    # the field was never on the schema in the first place.
+    dept = Department(dept_code=_uid("DEPT-"), name=body.name, org_code=body.org_code, wbs=body.wbs)
     db.add(dept); db.commit(); db.refresh(dept)
     return dept
 
