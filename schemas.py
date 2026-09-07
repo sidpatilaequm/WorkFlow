@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 from typing import Optional, List, Any
 from datetime import datetime
 from models import (
@@ -566,18 +566,18 @@ class SubActivityCreate(BaseModel):
     status_code: Optional[str] = None
     wbs: str
     is_leaf: int = 1
-    allocated: int = 0
-    approved: int = 0
-    pr: int = 0
-    po: int = 0
-    invoiced: int = 0
+    allocated: int = Field(0, ge=0)
+    approved: int = Field(0, ge=0)
+    pr: int = Field(0, ge=0)
+    po: int = Field(0, ge=0)
+    invoiced: int = Field(0, ge=0)
 
 class SubActivityUpdate(BaseModel):
-    allocated: Optional[int] = None
-    approved: Optional[int] = None
-    pr: Optional[int] = None
-    po: Optional[int] = None
-    invoiced: Optional[int] = None
+    allocated: Optional[int] = Field(None, ge=0)
+    approved: Optional[int] = Field(None, ge=0)
+    pr: Optional[int] = Field(None, ge=0)
+    po: Optional[int] = Field(None, ge=0)
+    invoiced: Optional[int] = Field(None, ge=0)
     status_code: Optional[str] = None
     employee_code: Optional[str] = None
 
@@ -615,18 +615,18 @@ class ActivityCreate(BaseModel):
     status_code: Optional[str] = None
     wbs: str
     is_leaf: int = 1
-    allocated: int = 0
-    approved: int = 0
-    pr: int = 0
-    po: int = 0
-    invoiced: int = 0
+    allocated: int = Field(0, ge=0)
+    approved: int = Field(0, ge=0)
+    pr: int = Field(0, ge=0)
+    po: int = Field(0, ge=0)
+    invoiced: int = Field(0, ge=0)
 
 class ActivityUpdate(BaseModel):
-    allocated: Optional[int] = None
-    approved: Optional[int] = None
-    pr: Optional[int] = None
-    po: Optional[int] = None
-    invoiced: Optional[int] = None
+    allocated: Optional[int] = Field(None, ge=0)
+    approved: Optional[int] = Field(None, ge=0)
+    pr: Optional[int] = Field(None, ge=0)
+    po: Optional[int] = Field(None, ge=0)
+    invoiced: Optional[int] = Field(None, ge=0)
     status_code: Optional[str] = None
     employee_code: Optional[str] = None
 
@@ -696,7 +696,7 @@ class TransferCreate(BaseModel):
     transfer_type: str
     from_code: str
     to_code: str
-    amount: int
+    amount: int = Field(gt=0)
     employee_code: Optional[str] = None
     note: Optional[str] = None
     transfer_date: date

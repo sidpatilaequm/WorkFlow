@@ -118,6 +118,54 @@ def _uid(prefix: str = "") -> str:
     return prefix + "".join(random.choices(chars, k=6))
 
 
+# Fiscal year starts in April: calendar month -> fiscal period_no (1-12). Shared by every
+# endpoint that needs "which month/quarter is it right now" instead of each reimplementing
+# (or, as check_invoice_budget/block_budget_amount used to, forgetting to) the mapping.
+_FISCAL_PERIOD_MAP = {4: 1, 5: 2, 6: 3, 7: 4, 8: 5, 9: 6, 10: 7, 11: 8, 12: 9, 1: 10, 2: 11, 3: 12}
+
+
+def _current_fiscal_period() -> int:
+    return _FISCAL_PERIOD_MAP[datetime.now().month]
+
+
+def _fiscal_quarter_periods(period_no: int) -> list:
+    """The 3 fiscal period_nos sharing period_no's quarter (Q1=1-3, Q2=4-6, Q3=7-9, Q4=10-12)."""
+    quarter_start = 3 * ((period_no - 1) // 3) + 1
+    return [quarter_start, quarter_start + 1, quarter_start + 2]
+
+
+def _as_bool(v) -> bool:
+    """BudgetVersion.is_current/is_locked are backed by a MySQL BIT(1) column, which comes back
+    from the driver as a single-byte `bytes` object (e.g. b'\\x00' for false) rather than an int
+    — and bool(b'\\x00') is True in Python, since it's non-empty bytes. Every other place in this
+    file that reads one of these two columns already special-cases bytes (see list_budget_versions);
+    this is the same conversion, centralized so a new call site can't reintroduce the bug."""
+    if isinstance(v, bytes):
+        return int.from_bytes(v, "big") != 0
+    return bool(v)
+
+
+def _require_budget_unlocked(db: Session):
+    """Refuses any budget-figure mutation while the current budget version is locked. Global,
+    not scoped to a fiscal year, because Activity/SubActivity have no fiscal_year/version_code
+    column linking them to a specific BudgetVersion — see the review that added this check."""
+    current = db.query(BudgetVersion).filter(BudgetVersion.is_current == 1).first()
+    if current and _as_bool(current.is_locked):
+        raise HTTPException(400, f"Budget version '{current.name}' is locked — unlock it in Budget Versions before making changes.")
+
+
+def _spread_delta(phases: list, field: str, delta: int):
+    """Distributes an integer delta across phase rows as evenly as possible, so their sum
+    changes by exactly `delta` with no rounding drift — used when a direct edit to an
+    Activity/SubActivity's annual total needs to keep its monthly phasing in sync."""
+    n = len(phases)
+    if n == 0 or delta == 0:
+        return
+    base, remainder = divmod(delta, n)
+    for i, p in enumerate(phases):
+        setattr(p, field, getattr(p, field) + base + (1 if i < remainder else 0))
+
+
 def _enrich_activity(a: Activity) -> ActivityOut:
     out = ActivityOut.model_validate(a)
     out.cost_type_tag  = a.cost_type.tag  if a.cost_type  else None
@@ -337,6 +385,7 @@ def list_activities(
 def create_activity(body: ActivityCreate, db: Session = Depends(get_db)):
     if not is_enabled(db, "budgeting_enabled"):
         raise HTTPException(400, "Budgeting is currently disabled by your organisation.")
+    _require_budget_unlocked(db)
     act = Activity(activity_code=_uid("ACT-"), **body.model_dump())
     db.add(act); db.commit(); db.refresh(act)
     return _enrich_activity(
@@ -347,14 +396,31 @@ def create_activity(body: ActivityCreate, db: Session = Depends(get_db)):
           .filter(Activity.activity_code == act.activity_code).first()
     )
 
+# Which Activity field a direct edit needs to also spread across ActivityPhase rows, and the
+# phase column it maps to — see _spread_delta. "invoiced" maps to "cons" (consumed/actuals),
+# matching the annual-total <-> monthly-phasing convention used throughout this module.
+_ACTIVITY_PHASE_FIELD = {"allocated": "alloc", "pr": "pr", "po": "po", "invoiced": "cons"}
+
 @app.patch("/api/activities/{code}", response_model=ActivityOut)
 def update_activity(code: str, body: ActivityUpdate, db: Session = Depends(get_db)):
     if not is_enabled(db, "budgeting_enabled"):
         raise HTTPException(400, "Budgeting is currently disabled by your organisation.")
+    _require_budget_unlocked(db)
     act = db.query(Activity).filter(Activity.activity_code == code).first()
     if not act: raise HTTPException(404, "Activity not found")
-    for k, v in body.model_dump(exclude_none=True).items():
+    updates = body.model_dump(exclude_none=True)
+    deltas = {k: v - getattr(act, k) for k, v in updates.items() if k in _ACTIVITY_PHASE_FIELD and v != getattr(act, k)}
+    for k, v in updates.items():
         setattr(act, k, v)
+    if deltas:
+        # Direct edits here previously only touched the annual total, leaving the 12 monthly
+        # phase rows (and every view that reads them — Monthly Phasing, Quick Metrics) stale.
+        # Spread each field's delta evenly across the phases so both stay consistent.
+        phases = db.query(ActivityPhase).filter(ActivityPhase.activity_code == code).order_by(ActivityPhase.period_no).all()
+        if not phases:
+            phases = [_phase_row(db, code, p) for p in range(1, 13)]
+        for k, delta in deltas.items():
+            _spread_delta(phases, _ACTIVITY_PHASE_FIELD[k], delta)
     db.commit()
     return _enrich_activity(
         db.query(Activity)
@@ -368,6 +434,7 @@ def update_activity(code: str, body: ActivityUpdate, db: Session = Depends(get_d
 def delete_activity(code: str, db: Session = Depends(get_db)):
     if not is_enabled(db, "budgeting_enabled"):
         raise HTTPException(400, "Budgeting is currently disabled by your organisation.")
+    _require_budget_unlocked(db)
     act = db.query(Activity).filter(Activity.activity_code == code).first()
     if not act: raise HTTPException(404, "Activity not found")
     # Guard: block delete if the activity carries real budget/spend/commitments
@@ -400,6 +467,7 @@ def list_sub_activities(parent_activity_code: Optional[str] = Query(None), db: S
 def create_sub_activity(body: SubActivityCreate, db: Session = Depends(get_db)):
     if not is_enabled(db, "budgeting_enabled"):
         raise HTTPException(400, "Budgeting is currently disabled by your organisation.")
+    _require_budget_unlocked(db)
     if body.level < 1 or body.level > 3:
         raise HTTPException(400, "level must be 1, 2, or 3")
     sa = SubActivity(subactivity_code=_uid("SACT-"), **body.model_dump())
@@ -415,10 +483,25 @@ def create_sub_activity(body: SubActivityCreate, db: Session = Depends(get_db)):
 def update_sub_activity(code: str, body: SubActivityUpdate, db: Session = Depends(get_db)):
     if not is_enabled(db, "budgeting_enabled"):
         raise HTTPException(400, "Budgeting is currently disabled by your organisation.")
+    _require_budget_unlocked(db)
     sa = db.query(SubActivity).filter(SubActivity.subactivity_code == code).first()
     if not sa: raise HTTPException(404, "Sub-activity not found")
-    for k, v in body.model_dump(exclude_none=True).items():
+    updates = body.model_dump(exclude_none=True)
+    deltas = {k: v - getattr(sa, k) for k, v in updates.items() if k in _ACTIVITY_PHASE_FIELD and v != getattr(sa, k)}
+    for k, v in updates.items():
         setattr(sa, k, v)
+    if deltas:
+        phases = db.query(SubActivityPhase).filter(SubActivityPhase.subactivity_code == code).order_by(SubActivityPhase.period_no).all()
+        if not phases:
+            phases = []
+            for p in range(1, 13):
+                row = db.query(SubActivityPhase).filter(SubActivityPhase.subactivity_code == code, SubActivityPhase.period_no == p).first()
+                if not row:
+                    row = SubActivityPhase(subactivity_code=code, period_no=p, alloc=0, pr=0, po=0, cons=0)
+                    db.add(row); db.flush()
+                phases.append(row)
+        for k, delta in deltas.items():
+            _spread_delta(phases, _ACTIVITY_PHASE_FIELD[k], delta)
     db.commit()
     return _enrich_sub(
         db.query(SubActivity)
@@ -431,6 +514,7 @@ def update_sub_activity(code: str, body: SubActivityUpdate, db: Session = Depend
 def delete_sub_activity(code: str, db: Session = Depends(get_db)):
     if not is_enabled(db, "budgeting_enabled"):
         raise HTTPException(400, "Budgeting is currently disabled by your organisation.")
+    _require_budget_unlocked(db)
     sa = db.query(SubActivity).filter(SubActivity.subactivity_code == code).first()
     if not sa: raise HTTPException(404, "Sub-activity not found")
     if sa.allocated or sa.pr or sa.po or sa.invoiced or sa.approved:
@@ -439,20 +523,27 @@ def delete_sub_activity(code: str, db: Session = Depends(get_db)):
 
 
 # ── Budget versions ───────────────────────────────────────────────────────────
+def _normalize_bv(v: BudgetVersion) -> BudgetVersion:
+    """BudgetVersion.is_current/is_locked are MySQL BIT(1) — the driver hands them back as raw
+    `bytes` after a fresh SELECT (including the db.refresh() every mutating endpoint below does
+    post-commit), and BudgetVersionOut's response model requires an int, so returning one
+    unnormalized 500s on serialization. This was previously only done in list_budget_versions;
+    every endpoint that returns a BudgetVersion needs it, not just the list one."""
+    if isinstance(v.is_current, bytes): v.is_current = int.from_bytes(v.is_current, 'big')
+    if isinstance(v.is_locked, bytes): v.is_locked = int.from_bytes(v.is_locked, 'big')
+    return v
+
 @app.get("/api/budget-versions", response_model=List[BudgetVersionOut])
 def list_budget_versions(db: Session = Depends(get_db)):
-    versions = db.query(BudgetVersion).all()
-    for v in versions:
-        if isinstance(v.is_current, bytes): v.is_current = int.from_bytes(v.is_current, 'big')
-        if isinstance(v.is_locked, bytes): v.is_locked = int.from_bytes(v.is_locked, 'big')
-    return versions
+    return [_normalize_bv(v) for v in db.query(BudgetVersion).all()]
+
 @app.post("/api/budget-versions", response_model=BudgetVersionOut, status_code=201)
 def create_budget_version(body: BudgetVersionCreate, db: Session = Depends(get_db)):
     if not is_enabled(db, "budgeting_enabled"):
         raise HTTPException(400, "Budgeting is currently disabled by your organisation.")
     bv = BudgetVersion(version_code=_uid("BV-"), **body.model_dump())
     db.add(bv); db.commit(); db.refresh(bv)
-    return bv
+    return _normalize_bv(bv)
 
 @app.patch("/api/budget-versions/{code}/set-active", response_model=BudgetVersionOut)
 def set_active_version(code: str, db: Session = Depends(get_db)):
@@ -463,7 +554,7 @@ def set_active_version(code: str, db: Session = Depends(get_db)):
     if not bv: raise HTTPException(404, "Budget version not found")
     bv.is_current = 1
     db.commit(); db.refresh(bv)
-    return bv
+    return _normalize_bv(bv)
 
 @app.patch("/api/budget-versions/{code}/toggle-lock", response_model=BudgetVersionOut)
 def toggle_lock(code: str, db: Session = Depends(get_db)):
@@ -471,9 +562,13 @@ def toggle_lock(code: str, db: Session = Depends(get_db)):
         raise HTTPException(400, "Budgeting is currently disabled by your organisation.")
     bv = db.query(BudgetVersion).filter(BudgetVersion.version_code == code).first()
     if not bv: raise HTTPException(404, "Budget version not found")
-    bv.is_locked = 0 if bv.is_locked else 1
+    # bv.is_locked can be True/1 (fresh in this session) OR the raw bytes MySQL BIT(1) gives back
+    # on first read after a restart — `0 if bv.is_locked else 1` looked reasonable but bool(b'\x00')
+    # is True in Python (non-empty bytes), so toggling from freshly-read "unlocked" silently did
+    # nothing. _as_bool handles both representations correctly.
+    bv.is_locked = 0 if _as_bool(bv.is_locked) else 1
     db.commit(); db.refresh(bv)
-    return bv
+    return _normalize_bv(bv)
 
 
 # ── Fiscal periods ────────────────────────────────────────────────────────────
@@ -493,8 +588,16 @@ def list_fiscal_years(db: Session = Depends(get_db)):
 def list_transfers(db: Session = Depends(get_db)):
     return db.query(Transfer).order_by(Transfer.transfer_date.desc()).all()
 
+def _committed_floor(a: Activity) -> int:
+    """An activity's allocated can never be scaled below what's already committed/spent
+    against it — same allocated - (pr+po+invoiced) "free" definition used everywhere else."""
+    return a.pr + a.po + a.invoiced
+
 @app.post("/api/transfers", response_model=TransferOut, status_code=201)
 def create_transfer(body: TransferCreate, db: Session = Depends(get_db)):
+    if not is_enabled(db, "budgeting_enabled"):
+        raise HTTPException(400, "Budgeting is currently disabled by your organisation.")
+    _require_budget_unlocked(db)
     amount = body.amount
     if body.transfer_type == "dept":
         src_projects = [p.project_code for p in db.query(Project).filter(Project.dept_code == body.from_code).all()]
@@ -504,6 +607,15 @@ def create_transfer(body: TransferCreate, db: Session = Depends(get_db)):
         src_total = sum(a.allocated for a in src_acts)
         if amount > src_total:
             raise HTTPException(400, f"Insufficient budget in source department (Rs {src_total:,} available)")
+        # Proportionally scaling every source activity down by the same ratio can still push
+        # an individual activity below what's already committed/spent against it even though
+        # the aggregate check above passed — reject the whole transfer rather than silently
+        # producing a negative-headroom activity.
+        for a in src_acts:
+            new_alloc = int(a.allocated * (1 - amount / src_total))
+            floor = _committed_floor(a)
+            if new_alloc < floor:
+                raise HTTPException(400, f"Transfer would reduce '{a.name}' below its committed/spent amount (Rs {floor:,}).")
         dst_total = sum(a.allocated for a in dst_acts) or 1
         for a in src_acts:
             a.allocated = int(a.allocated * (1 - amount / src_total))
@@ -516,6 +628,11 @@ def create_transfer(body: TransferCreate, db: Session = Depends(get_db)):
         src_total = sum(a.allocated for a in src_acts)
         if amount > src_total:
             raise HTTPException(400, f"Insufficient budget in source project (Rs {src_total:,} available)")
+        for a in src_acts:
+            new_alloc = int(a.allocated * (1 - amount / src_total))
+            floor = _committed_floor(a)
+            if new_alloc < floor:
+                raise HTTPException(400, f"Transfer would reduce '{a.name}' below its committed/spent amount (Rs {floor:,}).")
         dst_total = sum(a.allocated for a in dst_acts) or 1
         for a in src_acts:
             a.allocated = int(a.allocated * (1 - amount / src_total))
@@ -529,6 +646,9 @@ def create_transfer(body: TransferCreate, db: Session = Depends(get_db)):
             raise HTTPException(404, "Source or destination activity not found")
         if amount > src.allocated:
             raise HTTPException(400, f"Insufficient budget (Rs {src.allocated:,} available)")
+        floor = _committed_floor(src)
+        if src.allocated - amount < floor:
+            raise HTTPException(400, f"Transfer would reduce '{src.name}' below its committed/spent amount (Rs {floor:,}).")
         src.allocated -= amount
         dst.allocated += amount
 
@@ -560,11 +680,18 @@ def _get_or_404(db, model, code, code_field, label):
         raise HTTPException(404, f"{label} not found: {code}")
     return obj
 
-def _phase_row(db: Session, activity_code: str, period_no: int) -> ActivityPhase:
-    row = (db.query(ActivityPhase)
-             .filter(ActivityPhase.activity_code == activity_code,
-                     ActivityPhase.period_no == period_no)
-             .first())
+def _phase_row(db: Session, activity_code: str, period_no: int, for_update: bool = False) -> ActivityPhase:
+    q = (db.query(ActivityPhase)
+           .filter(ActivityPhase.activity_code == activity_code,
+                    ActivityPhase.period_no == period_no))
+    if for_update:
+        # Locks the row for the rest of this transaction so two concurrent decide_change_request
+        # calls against the same activity/month can't both read the same "free" amount and both
+        # approve past it — the second call blocks until the first commits, then re-reads
+        # post-commit values. No-op on SQLite (dev fallback with no MySQL creds); MySQL/InnoDB
+        # honors it.
+        q = q.with_for_update()
+    row = q.first()
     if not row:
         # create a zeroed row if one doesn't exist yet (defensive — seed data
         # always has all 12, but user-created activities may not)
@@ -572,6 +699,12 @@ def _phase_row(db: Session, activity_code: str, period_no: int) -> ActivityPhase
                              alloc=0, pr=0, po=0, cons=0)
         db.add(row); db.flush()
     return row
+
+def _free_budget(phase: ActivityPhase) -> int:
+    """Money not yet spoken for: allocated minus what's already committed (open PR/PO) or
+    actually spent — the one consistent definition used for every "is there enough free
+    budget" check in this module."""
+    return phase.alloc - (phase.pr + phase.po + phase.cons)
 
 def _enrich_cr(cr: ChangeRequest, db: Session) -> ChangeRequestOut:
     out = ChangeRequestOut.model_validate(cr)
@@ -596,6 +729,9 @@ def list_change_requests(
 
 @app.post("/api/change-requests", response_model=ChangeRequestOut, status_code=201)
 def create_change_request(body: ChangeRequestCreate, db: Session = Depends(get_db)):
+    if not is_enabled(db, "budgeting_enabled"):
+        raise HTTPException(400, "Budgeting is currently disabled by your organisation.")
+    _require_budget_unlocked(db)
     if body.request_type not in ("months", "carry", "pull", "transfer"):
         raise HTTPException(400, "request_type must be one of months, carry, pull, transfer")
     if body.amount <= 0:
@@ -609,6 +745,12 @@ def create_change_request(body: ChangeRequestCreate, db: Session = Depends(get_d
         if body.b_code == body.a_code:
             raise HTTPException(400, "Source and target activity must differ")
         _get_or_404(db, Activity, body.b_code, "activity_code", "Target activity")
+        # A transfer moves an amount between two activities within the SAME month — decide_
+        # change_request only ever looks up period_from on both sides (see below), so a
+        # divergent period_to would be silently ignored at money-movement time while still
+        # being stored/displayed on the request. Reject it here instead of allowing that trap.
+        if body.period_from != body.period_to:
+            raise HTTPException(400, "A transfer's period_from and period_to must match — it moves budget within one month, not between months.")
     else:
         if body.period_from == body.period_to:
             raise HTTPException(400, "Source and destination months must differ")
@@ -617,10 +759,25 @@ def create_change_request(body: ChangeRequestCreate, db: Session = Depends(get_d
         if p < 1 or p > 12:
             raise HTTPException(400, "period_from / period_to must be between 1 and 12")
 
+    # Mirror the frontend's own carry/pull direction rules server-side — that logic currently
+    # lives only in BudgetApp.jsx's validate(), so a direct API call could otherwise create a
+    # "carry" that actually pulls from the future, or vice versa.
+    current_period = _current_fiscal_period()
+    if body.request_type == "carry":
+        if body.period_from >= current_period:
+            raise HTTPException(400, "Carry forward only applies to closed periods (before the current period).")
+        if body.period_to < current_period:
+            raise HTTPException(400, "Carry forward's target month must be the current period or later.")
+    elif body.request_type == "pull":
+        if body.period_from <= current_period:
+            raise HTTPException(400, "Pull source must be a future/planned month (after the current period).")
+        if body.period_to > current_period:
+            raise HTTPException(400, "Pull destination must be the current period or earlier.")
+
     # Validate enough is actually free to move (mirrors v4 client-side checks,
     # enforced here too so the request can't be raised against an impossible amount).
     src_phase = _phase_row(db, body.a_code, body.period_from)
-    free = src_phase.alloc - src_phase.cons
+    free = _free_budget(src_phase)
     if body.amount > free:
         raise HTTPException(400, f"Only {free:,} is free in {a.name} for period {body.period_from} (requested {body.amount:,}).")
 
@@ -649,6 +806,9 @@ def create_change_request(body: ChangeRequestCreate, db: Session = Depends(get_d
 
 @app.patch("/api/change-requests/{cr_id}/decide", response_model=ChangeRequestOut)
 def decide_change_request(cr_id: str, body: ChangeRequestDecide, db: Session = Depends(get_db)):
+    if not is_enabled(db, "budgeting_enabled"):
+        raise HTTPException(400, "Budgeting is currently disabled by your organisation.")
+    _require_budget_unlocked(db)
     cr = db.query(ChangeRequest).filter(ChangeRequest.id == cr_id).first()
     if not cr:
         raise HTTPException(404, "Change request not found")
@@ -657,13 +817,16 @@ def decide_change_request(cr_id: str, body: ChangeRequestDecide, db: Session = D
 
     if body.approve:
         # ── THIS is where the money actually moves ──
+        # for_update=True on the source phase row below: locks it for the rest of this
+        # transaction so two concurrent approvals against the same activity/month can't both
+        # read the same "free" figure and both approve past it (see _phase_row).
         if cr.request_type == "transfer":
             src_act = _get_or_404(db, Activity, cr.a_code, "activity_code", "Source activity")
             dst_act = _get_or_404(db, Activity, cr.b_code, "activity_code", "Target activity")
-            src_phase = _phase_row(db, cr.a_code, cr.period_from)
+            src_phase = _phase_row(db, cr.a_code, cr.period_from, for_update=True)
             dst_phase = _phase_row(db, cr.b_code, cr.period_from)
 
-            free = src_phase.alloc - src_phase.cons
+            free = _free_budget(src_phase)
             if cr.amount > free:
                 raise HTTPException(400, f"Approval failed: only {free:,} now free in {src_act.name} for that month (budget moved since request was raised).")
 
@@ -674,10 +837,10 @@ def decide_change_request(cr_id: str, body: ChangeRequestDecide, db: Session = D
 
         else:  # months | carry | pull — same activity, two different months
             act = _get_or_404(db, Activity, cr.a_code, "activity_code", "Activity")
-            src_phase = _phase_row(db, cr.a_code, cr.period_from)
+            src_phase = _phase_row(db, cr.a_code, cr.period_from, for_update=True)
             dst_phase = _phase_row(db, cr.a_code, cr.period_to)
 
-            free = src_phase.alloc - src_phase.cons
+            free = _free_budget(src_phase)
             if cr.amount > free:
                 raise HTTPException(400, f"Approval failed: only {free:,} now free in {act.name} for that month (budget moved since request was raised).")
 
@@ -700,11 +863,11 @@ def decide_change_request(cr_id: str, body: ChangeRequestDecide, db: Session = D
 # ── Invoice Validation ────────────────────────────────────────────────────────
 @app.post("/api/check-invoice", response_model=InvoiceBudgetCheckRes)
 def check_invoice_budget(payload: InvoiceBudgetCheckReq, db: Session = Depends(get_db)):
-    # 1. Determine current month and quarter
-    current_month = datetime.now().month
-    quarter_start_month = 3 * ((current_month - 1) // 3) + 1
-    quarter_months = [quarter_start_month, quarter_start_month + 1, quarter_start_month + 2]
-    
+    # 1. Determine the current fiscal month and quarter (fiscal year starts in April —
+    # calendar month can't be used as period_no directly, see _current_fiscal_period).
+    current_month = _current_fiscal_period()
+    quarter_months = _fiscal_quarter_periods(current_month)
+
     # 2. Fetch the phases for this activity
     phases = db.query(ActivityPhase).filter(
         ActivityPhase.activity_code == payload.activity_code
@@ -744,7 +907,7 @@ def check_invoice_budget(payload: InvoiceBudgetCheckReq, db: Session = Depends(g
 
 @app.post("/api/block-amount")
 def block_budget_amount(payload: BudgetBlockReq, db: Session = Depends(get_db)):
-    current_month = datetime.now().month
+    current_month = _current_fiscal_period()
     phase = db.query(ActivityPhase).filter(
         ActivityPhase.activity_code == payload.activity_code,
         ActivityPhase.period_no == current_month
@@ -988,9 +1151,8 @@ def _try_merge_budget_cycle(db: Session, fiscal_year: Optional[str]) -> bool:
 
     uploads = _approved_unmerged_uploads(db, fiscal_year)
     approved_depts = {u.dept_code for u in uploads if u.dept_code}
-    # REMOVED STRICT CHECK FOR TESTING: Allow merging immediately without waiting for all departments
-    # if not project_depts.issubset(approved_depts):
-    #     return False
+    if not project_depts.issubset(approved_depts):
+        return False
 
     merged_at = datetime.utcnow()
     for upload in uploads:
@@ -1123,6 +1285,11 @@ def list_budget_uploads(
 def decide_budget_upload(upload_id: str, body: BudgetUploadDecide, db: Session = Depends(get_db)):
     if not is_enabled(db, "budgeting_enabled"):
         raise HTTPException(400, "Budgeting is currently disabled by your organisation.")
+    if body.approve:
+        # Only the approve path can actually merge staged rows into live Activity figures
+        # (see _try_merge_budget_cycle below) — rejecting an upload doesn't touch any budget
+        # figure, so that path stays available even while locked.
+        _require_budget_unlocked(db)
     upload = db.query(BudgetUpload).filter(BudgetUpload.id == upload_id).first()
     if not upload:
         raise HTTPException(404, "Budget upload not found")
@@ -1296,31 +1463,16 @@ app.include_router(vendor_materials.router)
 @app.get("/api/department-status")
 def get_department_status(dept_code: str, db: Session = Depends(get_db)):
     from models import Department, Activity, ActivityPhase
-    import datetime
-    
+
     dept = db.query(Department).filter(Department.dept_code == dept_code).first()
     if not dept:
         return {"status": "ERROR", "message": "Department not found"}
-        
+
     activities = db.query(Activity).filter(Activity.project.has(dept_code=dept_code)).all()
-    
-    today = datetime.datetime.now()
-    month = today.month
-    
-    # Financial Year mapping (April start)
-    # 1=Apr, 2=May, ..., 12=Mar
-    period_map = {4:1, 5:2, 6:3, 7:4, 8:5, 9:6, 10:7, 11:8, 12:9, 1:10, 2:11, 3:12}
-    current_period = period_map[month]
-    
-    if current_period in [1, 2, 3]:
-        q_periods = [1, 2, 3]
-    elif current_period in [4, 5, 6]:
-        q_periods = [4, 5, 6]
-    elif current_period in [7, 8, 9]:
-        q_periods = [7, 8, 9]
-    else:
-        q_periods = [10, 11, 12]
-        
+
+    current_period = _current_fiscal_period()
+    q_periods = _fiscal_quarter_periods(current_period)
+
     current_month_allocated = 0
     current_quarter_allocated = 0
     
