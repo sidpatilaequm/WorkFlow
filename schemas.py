@@ -875,6 +875,13 @@ class EmailTemplatePreviewOut(BaseModel):
 class EmailTemplateTestSend(BaseModel):
     to_email: EmailStr
 
+class EmailTemplateAttachment(BaseModel):
+    filename: str
+    content_base64: str
+    # e.g. "pdf" — passed straight through to MIMEApplication's _subtype
+    subtype: str = "pdf"
+
+
 class EmailTemplateTriggerRequest(BaseModel):
     to_email: EmailStr
     variables: dict = {}
@@ -883,3 +890,5 @@ class EmailTemplateTriggerRequest(BaseModel):
     # tone column can't reflect which actually happened on a given send. None (the default)
     # keeps today's behaviour: use the template row's own status_strip_tone.
     tone_override: Optional[str] = None
+    # Base64-encoded files to attach — e.g. the analytics service's generated PDF report.
+    attachments: Optional[List[EmailTemplateAttachment]] = None

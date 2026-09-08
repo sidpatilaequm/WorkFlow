@@ -201,10 +201,19 @@ def render_email_template(template: "models.EmailTemplate", variables: dict, ton
     return subject, html_body, text_body
 
 
-async def send_triggered_email(db: Session, mail_key: str, to_email: str, variables: dict, tone_override: Optional[str] = None) -> bool:
+async def send_triggered_email(
+    db: Session,
+    mail_key: str,
+    to_email: str,
+    variables: dict,
+    tone_override: Optional[str] = None,
+    attachments: Optional[list[tuple[str, bytes, str]]] = None,
+) -> bool:
     """Look up an email_templates row by mail_key, render it, and send it.
     No-ops (logged) when the row is missing or disabled — an admin turning a
-    mail off must silently stop it, not error the caller's request flow."""
+    mail off must silently stop it, not error the caller's request flow.
+    attachments: see NotificationService.send_email — e.g. a PDF report a
+    caller like the analytics service wants attached to the branded email."""
     template = db.query(models.EmailTemplate).filter(models.EmailTemplate.mail_key == mail_key).first()
     if not template:
         logger.warning("send_triggered_email: no template for mail_key=%s", mail_key)
@@ -217,4 +226,6 @@ async def send_triggered_email(db: Session, mail_key: str, to_email: str, variab
         return False
 
     subject, html_body, text_body = render_email_template(template, variables, tone_override=tone_override)
-    return await notification_service.send_email(to=[to_email], subject=subject, html_body=html_body, text_body=text_body)
+    return await notification_service.send_email(
+        to=[to_email], subject=subject, html_body=html_body, text_body=text_body, attachments=attachments
+    )

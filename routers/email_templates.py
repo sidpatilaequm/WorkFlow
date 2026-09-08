@@ -109,7 +109,17 @@ async def trigger_email(
 ):
     if not JAVA_SERVICE_TOKEN or x_service_token != JAVA_SERVICE_TOKEN:
         raise HTTPException(401, "Invalid or missing service token")
-    sent = await send_triggered_email(db, mail_key, payload.to_email, payload.variables, tone_override=payload.tone_override)
+    attachments = None
+    if payload.attachments:
+        import base64
+        attachments = [
+            (a.filename, base64.b64decode(a.content_base64), a.subtype)
+            for a in payload.attachments
+        ]
+    sent = await send_triggered_email(
+        db, mail_key, payload.to_email, payload.variables,
+        tone_override=payload.tone_override, attachments=attachments,
+    )
     return {"sent": sent}
 
 

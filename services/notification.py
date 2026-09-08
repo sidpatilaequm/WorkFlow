@@ -12,9 +12,10 @@ from typing import Optional
 # pyrefly: ignore [missing-import]
 import httpx
 # pyrefly: ignore [missing-import]
-import aiosmtplib 
+import aiosmtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email.mime.application import MIMEApplication
 
 import os
 from dotenv import load_dotenv
@@ -45,18 +46,35 @@ class NotificationService:
         subject: str,
         html_body: str,
         text_body: str = "",
+        attachments: Optional[list[tuple[str, bytes, str]]] = None,
     ) -> bool:
+        """attachments: list of (filename, content_bytes, mime_subtype) e.g.
+        ("report.pdf", pdf_bytes, "pdf"). When present, the message becomes
+        multipart/mixed with the text/html alternative nested inside — the
+        alternative-only shape below is unchanged for every existing caller
+        that doesn't pass attachments."""
         if not SMTP_USER or not SMTP_PASSWORD:
             logger.warning("SMTP not configured — skipping email")
             return False
         try:
-            msg = MIMEMultipart("alternative")
+            alt = MIMEMultipart("alternative")
+            if text_body:
+                alt.attach(MIMEText(text_body, "plain"))
+            alt.attach(MIMEText(html_body, "html"))
+
+            if attachments:
+                msg = MIMEMultipart("mixed")
+                msg.attach(alt)
+                for filename, content, subtype in attachments:
+                    part = MIMEApplication(content, _subtype=subtype)
+                    part.add_header("Content-Disposition", "attachment", filename=filename)
+                    msg.attach(part)
+            else:
+                msg = alt
+
             msg["Subject"] = subject
             msg["From"] = f"{SMTP_FROM_NAME} <{SMTP_USER}>"
             msg["To"] = ", ".join(to)
-            if text_body:
-                msg.attach(MIMEText(text_body, "plain"))
-            msg.attach(MIMEText(html_body, "html"))
 
             await aiosmtplib.send(
                 msg,
