@@ -6,7 +6,7 @@ from datetime import date, datetime
 import uuid
 
 from database import get_db
-from models import VendorMaster, VendorAddress, SupplierRegistration
+from models import VendorMaster, VendorAddress, SupplierRegistration, CompanyDetails
 
 router = APIRouter(prefix="/api/vendors", tags=["Vendors"])
 
@@ -68,32 +68,39 @@ def create_vendor_master(vendor_data: VendorMasterCreate, db: Session = Depends(
 
 @router.get("/all")
 def get_all_vendors(db: Session = Depends(get_db)):
-    rows = db.query(VendorMaster, SupplierRegistration).outerjoin(
+    # company_details first (V9 migration) — the live, kept-in-sync profile — falling back to
+    # supplier_registration only for a vendor that predates the migration and has no linked
+    # company_details row yet. Same COALESCE-style fallback already used in reports.py.
+    rows = db.query(VendorMaster, SupplierRegistration, CompanyDetails).outerjoin(
         SupplierRegistration, VendorMaster.supplier_registration_id == SupplierRegistration.id
+    ).outerjoin(
+        CompanyDetails, VendorMaster.company_id == CompanyDetails.company_id
     ).all()
     return [
         {
             "vendor_id": v.vendor_id,
             "bp_no": v.bp_no,
-            "name": reg.vendor_name if reg else None,
-            "email": reg.email if reg else None,
+            "name": (cd.company_name if cd else None) or (reg.vendor_name if reg else None),
+            "email": (cd.email if cd else None) or (reg.email if reg else None),
         }
-        for v, reg in rows
+        for v, reg, cd in rows
     ]
 
 @router.get("/{vendor_id}")
 def get_vendor(vendor_id: int, db: Session = Depends(get_db)):
-    row = db.query(VendorMaster, SupplierRegistration).outerjoin(
+    row = db.query(VendorMaster, SupplierRegistration, CompanyDetails).outerjoin(
         SupplierRegistration, VendorMaster.supplier_registration_id == SupplierRegistration.id
+    ).outerjoin(
+        CompanyDetails, VendorMaster.company_id == CompanyDetails.company_id
     ).filter(VendorMaster.vendor_id == vendor_id).first()
     if not row:
         raise HTTPException(status_code=404, detail="Vendor not found")
-    vendor, reg = row
+    vendor, reg, cd = row
 
     return {
         "vendor_id": vendor.vendor_id,
         "bp_no": vendor.bp_no,
-        "name": reg.vendor_name if reg else None,
-        "gst_number": reg.gst_number if reg else None,
-        "pan": reg.pan_number if reg else None,
+        "name": (cd.company_name if cd else None) or (reg.vendor_name if reg else None),
+        "gst_number": (cd.gstin_number if cd else None) or (reg.gst_number if reg else None),
+        "pan": (cd.pan_number if cd else None) or (reg.pan_number if reg else None),
     }

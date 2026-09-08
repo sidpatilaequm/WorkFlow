@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text, or_
 from collections import defaultdict
 from database import get_db
-from models import VendorMaster, PurchaseRequisition, PurchaseRequisitionItem, PurchaseRequisitionItemVendor, VendorQuotation
+from models import VendorMaster, PurchaseRequisition, PurchaseRequisitionItem, PurchaseRequisitionItemVendor, VendorQuotation, CompanyDetails
 import asyncio
 from services.rfq_email_helper import send_rfq_invitation
 
@@ -66,17 +66,21 @@ def get_purchase_requisitions(
             raise HTTPException(status_code=404, detail=f"Vendor {vendor_code} not found")
 
     reg = vendor.supplier_registration
+
+    # Retrieve the company_id which might be used as vendor_id by the frontend API — also pulls
+    # company_name now (V9 migration) so the header prefers the live company_details profile.
+    cd_row = db.execute(
+        text("SELECT company_id, company_name FROM company_details WHERE company_code = :code"),
+        {"code": vendor.bp_no}
+    ).first()
+    company_id = cd_row[0] if cd_row else None
+    company_name = cd_row[1] if cd_row else None
+
     vendor_info = {
         "sapVendorCode": vendor.bp_no,
-        "sapVendorName": reg.vendor_name if reg else None,
+        "sapVendorName": company_name or (reg.vendor_name if reg else None),
         "companyCode": vendor.bp_no
     }
-
-    # Retrieve the company_id which might be used as vendor_id by the frontend API
-    company_id = db.execute(
-        text("SELECT company_id FROM company_details WHERE company_code = :code"),
-        {"code": vendor.bp_no}
-    ).scalar()
 
     vendor_ids_to_check = [vendor.vendor_id]
     if company_id:
@@ -389,15 +393,19 @@ def action_purchase_requisition(
 
 @router.get("/all-vendors")
 def get_all_vendors_for_rfq(db: Session = Depends(get_db)):
-    vendors = db.query(VendorMaster).all()
+    # company_details first (V9 migration), falling back to supplier_registration only for a
+    # vendor that predates the migration and has no linked company_details row yet.
+    rows = db.query(VendorMaster, CompanyDetails).outerjoin(
+        CompanyDetails, VendorMaster.company_id == CompanyDetails.company_id
+    ).all()
     return [
         {
             "vendor_id": v.vendor_id,
             "bp_no": v.bp_no,
-            "vendor_name": v.supplier_registration.vendor_name if v.supplier_registration else None,
-            "email": v.supplier_registration.email if v.supplier_registration else None,
+            "vendor_name": (cd.company_name if cd else None) or (v.supplier_registration.vendor_name if v.supplier_registration else None),
+            "email": (cd.email if cd else None) or (v.supplier_registration.email if v.supplier_registration else None),
         }
-        for v in vendors
+        for v, cd in rows
     ]
 
 import random
@@ -434,12 +442,15 @@ def get_vendor_selection_list(pr_number: str = None, material_code: str = None, 
         all_vendors_db = db.query(VendorMaster).all()
 
         def format_vendor(v):
+            # company_details first (V9 migration), falling back to supplier_registration only
+            # for a vendor that predates the migration.
+            cd = v.company_details
             reg = v.supplier_registration
             return {
                 "vendor_id": v.vendor_id,
                 "bp_no": v.bp_no,
-                "vendor_name": reg.vendor_name if reg else None,
-                "email": reg.email if reg else None,
+                "vendor_name": (cd.company_name if cd else None) or (reg.vendor_name if reg else None),
+                "email": (cd.email if cd else None) or (reg.email if reg else None),
                 "response_rate": "100% in SLA",
                 "avg_quote_time": f"{round(random.uniform(0.5, 2.5), 1)} days",
                 "price_index": str(round(random.uniform(0.8, 1.2), 2)),

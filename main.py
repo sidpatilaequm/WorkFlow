@@ -1483,7 +1483,6 @@ app.include_router(approvals.router,  prefix="/api/approvals", tags=["Approvals"
 app.include_router(analytics.router,  prefix="/api/analytics", tags=["Analytics"])
 app.include_router(email_templates.router, prefix="/api/email-templates", tags=["Email Templates"])
 app.include_router(reports.router)
-app.include_router(vendors.router)
 app.include_router(vendor_materials.router)
 
 @app.get("/api/department-status")

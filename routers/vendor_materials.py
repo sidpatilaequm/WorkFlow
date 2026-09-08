@@ -18,10 +18,13 @@ def get_vendor_material_list(request: Request, db: Session = Depends(get_db)):
         query += " WHERE vendor_id = :vendor_id"
         params["vendor_id"] = vendor_id
         
-        # Get vendor details
+        # Get vendor details — company_details first (V9 migration), falling back to
+        # supplier_registration only for a vendor that predates the migration.
         v_query = (
-            "SELECT vm.bp_no, sr.vendor_name AS name "
-            "FROM vendor_master vm LEFT JOIN supplier_registration sr ON vm.supplier_registration_id = sr.id "
+            "SELECT vm.bp_no, COALESCE(cd.company_name, sr.vendor_name) AS name "
+            "FROM vendor_master vm "
+            "LEFT JOIN supplier_registration sr ON vm.supplier_registration_id = sr.id "
+            "LEFT JOIN company_details cd ON vm.company_id = cd.company_id "
             "WHERE vm.vendor_id = :vendor_id"
         )
         try:

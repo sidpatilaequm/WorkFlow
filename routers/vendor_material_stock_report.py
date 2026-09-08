@@ -35,10 +35,15 @@ def _resolve_vendor(db: Session, bp_no: Optional[str], vendor_id: Optional[int])
 
 
 def _vendor_header(db: Session, vendor_id: int) -> Dict[str, Any]:
+    # company_details first (V9 migration), falling back to supplier_registration only for a
+    # vendor that predates the migration and has no linked company_details row yet.
     row = db.execute(
         text(
-            "SELECT vm.bp_no, sr.vendor_name AS name, sr.gst_number AS gst_number, vm.bp_no AS company_code "
-            "FROM vendor_master vm LEFT JOIN supplier_registration sr ON vm.supplier_registration_id = sr.id "
+            "SELECT vm.bp_no, COALESCE(cd.company_name, sr.vendor_name) AS name, "
+            "COALESCE(cd.gstin_number, sr.gst_number) AS gst_number, vm.bp_no AS company_code "
+            "FROM vendor_master vm "
+            "LEFT JOIN supplier_registration sr ON vm.supplier_registration_id = sr.id "
+            "LEFT JOIN company_details cd ON vm.company_id = cd.company_id "
             "WHERE vm.vendor_id = :vid"
         ),
         {"vid": vendor_id},

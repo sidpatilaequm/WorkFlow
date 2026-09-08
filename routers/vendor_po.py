@@ -34,15 +34,23 @@ def get_purchase_orders(
             raise HTTPException(status_code=404, detail=f"Vendor {vendor_code} not found")
 
         reg = vendor.supplier_registration
+
+        from sqlalchemy import text
+        cd_row = db.execute(
+            text("SELECT company_id, company_name FROM company_details WHERE company_code = :bp_no"),
+            {"bp_no": vendor.bp_no}
+        ).first()
+        cd_id = cd_row[0] if cd_row else None
+        cd_name = cd_row[1] if cd_row else None
+
+        # company_details first (V9 migration), falling back to supplier_registration only for a
+        # vendor that predates the migration.
         vendor_info = {
             "sapVendorCode": vendor.bp_no,
-            "sapVendorName": reg.vendor_name if reg else None,
+            "sapVendorName": cd_name or (reg.vendor_name if reg else None),
             "companyCode": vendor.bp_no,
         }
 
-        from sqlalchemy import text
-        cd_id = db.execute(text("SELECT company_id FROM company_details WHERE company_code = :bp_no"), {"bp_no": vendor.bp_no}).scalar()
-        
         possible_vendor_ids = [vendor.vendor_id]
         if cd_id:
             possible_vendor_ids.append(cd_id)

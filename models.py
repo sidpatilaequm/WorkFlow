@@ -914,17 +914,21 @@ class VendorMaster(Base):
     vendor_id = Column(Integer, primary_key=True, index=True)
     bp_no = Column(String(255), unique=True)
     supplier_registration_id = Column(Integer, ForeignKey("supplier_registration.id"), nullable=True)
+    company_id = Column(Integer, ForeignKey("company_details.company_id"), nullable=True)
     sys_created_date = Column(DateTime)
     sys_modified_date = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     addresses = relationship("VendorAddress", back_populates="vendor")
     supplier_registration = relationship("SupplierRegistration")
+    company_details = relationship("CompanyDetails")
 
 
 class SupplierRegistration(Base):
-    """Read-only mirror of backend_java's SupplierRegistration — this is the real source of a
-    vendor's name/GST/PAN now (see VendorMaster.supplier_registration_id above). Only the columns
-    WorkFlow actually reads are mapped; backend_java owns writes to this table."""
+    """Read-only mirror of backend_java's SupplierRegistration — the original onboarding
+    application. As of the company_details migration (V9), company_details is the live source of
+    truth for an approved vendor's profile (see VendorMaster.company_id above); this table is kept
+    as the historical/audit record and is still what onboarding_dashboard.py reports compliance
+    against. Only the columns WorkFlow actually reads are mapped; backend_java owns writes."""
     __tablename__ = "supplier_registration"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -932,6 +936,21 @@ class SupplierRegistration(Base):
     email = Column(String(255))
     gst_number = Column(String(255))
     pan_number = Column(String(255))
+
+
+class CompanyDetails(Base):
+    """Read-only mirror of backend_java's CompanyDetails — the live source of truth for an
+    approved vendor's profile (V9 migration). Only the columns WorkFlow actually reads are
+    mapped; backend_java owns writes to this table."""
+    __tablename__ = "company_details"
+
+    company_id = Column(Integer, primary_key=True, index=True)
+    company_name = Column(String(255))
+    company_code = Column(String(255))
+    status = Column(String(255))
+    gstin_number = Column(String(255))
+    pan_number = Column(String(255))
+    email = Column(String(255))
 
 class VendorAddress(Base):
     __tablename__ = "vendor_address"

@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, Header, Query, HTTPException
 from sqlalchemy.orm import Session
 from database import get_db
-from models import VendorMaster, VendorQuotation, VendorQuotationItem, PurchaseRequisition
+from models import VendorMaster, VendorQuotation, VendorQuotationItem, PurchaseRequisition, CompanyDetails
 from sqlalchemy import or_
 
 router = APIRouter(prefix="/api/vendor", tags=["Vendor Portal (Mock)"])
@@ -27,10 +27,13 @@ def get_quotation_report(
         if not vendor:
             raise HTTPException(status_code=404, detail=f"Vendor {vendor_code} not found")
     
+    # company_details first (V9 migration), falling back to supplier_registration only for a
+    # vendor that predates the migration.
     reg = vendor.supplier_registration
+    cd = vendor.company_details
     vendor_info = {
         "sapVendorCode": vendor.bp_no,
-        "sapVendorName": reg.vendor_name if reg else None,
+        "sapVendorName": (cd.company_name if cd else None) or (reg.vendor_name if reg else None),
         "companyCode": vendor.bp_no
     }
 
@@ -233,14 +236,20 @@ def get_all_quotations(db: Session = Depends(get_db)):
         pr = db.query(PurchaseRequisition).filter(PurchaseRequisition.id == q.pr_id).first()
         actual_pr_number = pr.pr_number if pr else f"PR-{q.pr_id}"
         
-        vendor = None
-        if q.bp_no:
-            vendor = db.query(VendorMaster).filter(VendorMaster.bp_no == q.bp_no).first()
-        if not vendor:
-            vendor = db.query(VendorMaster).filter(VendorMaster.vendor_id == q.vendor_id).first()
-            
-        vendor_name = (vendor.supplier_registration.vendor_name if vendor and vendor.supplier_registration else None) \
-            or (f"Vendor-{q.vendor_id}")
+        # create_quotation (above) stores vendor_id as company_details.company_id, not
+        # vendor_master.vendor_id — those are different id spaces. Resolve via CompanyDetails
+        # first to match what was actually written; fall back to the old VendorMaster-based
+        # lookups only for legacy rows written before this fix.
+        company = db.query(CompanyDetails).filter(CompanyDetails.company_id == q.vendor_id).first()
+        vendor_name = company.company_name if company else None
+        if not vendor_name:
+            vendor = None
+            if q.bp_no:
+                vendor = db.query(VendorMaster).filter(VendorMaster.bp_no == q.bp_no).first()
+            if not vendor:
+                vendor = db.query(VendorMaster).filter(VendorMaster.vendor_id == q.vendor_id).first()
+            vendor_name = (vendor.supplier_registration.vendor_name if vendor and vendor.supplier_registration else None) \
+                or (f"Vendor-{q.vendor_id}")
         
         # Calculate totals and build line_items
         items_db = db.query(VendorQuotationItem).filter(VendorQuotationItem.quotation_id == q.quotation_id).all()
