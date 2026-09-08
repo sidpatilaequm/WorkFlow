@@ -413,12 +413,11 @@ from datetime import date, datetime
 from typing import Optional, List, Any
 from pydantic import BaseModel
 
-# ── Organisation ──────────────────────────────────────────────────────────────
-class OrganisationOut(BaseModel):
-    org_code: str
-    name: str
-    base_currency: str
-    fiscal_year: str
+# ── Company ───────────────────────────────────────────────────────────────────
+class CompanyOut(BaseModel):
+    company_code: str
+    company_name: str
+    gst_number: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -427,17 +426,20 @@ class OrganisationOut(BaseModel):
 # ── Department ────────────────────────────────────────────────────────────────
 class DepartmentCreate(BaseModel):
     name: str
-    org_code: str
     wbs: str
 
 class DepartmentOut(BaseModel):
     dept_code: str
     name: str
-    org_code: str
     wbs: str
+    company_codes: List[str] = []
 
     class Config:
         from_attributes = True
+
+
+class DepartmentCompanyAssign(BaseModel):
+    company_code: str
 
 
 # ── Project ───────────────────────────────────────────────────────────────────

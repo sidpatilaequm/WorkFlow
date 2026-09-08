@@ -47,15 +47,15 @@ from sqlalchemy.orm import Session, joinedload
 from routers import workflows, requests, stages, approvals, analytics, auth, onboarding_dashboard, reports, email_templates
 from database import get_db, init_db
 from models import (
-    Organisation, Department, Project, CostType, Status,
+    Company, Department, Project, CostType, Status,
     Employee, Activity, ActivityPhase, SubActivity, SubActivityPhase,
     BudgetVersion, FiscalPeriod, Transfer, ChangeRequest,
     BudgetUpload,
 )
 from org_config import is_enabled
 from schemas import (
-    OrganisationOut,
-    DepartmentCreate, DepartmentOut, DepartmentSetHead,
+    CompanyOut,
+    DepartmentCreate, DepartmentOut, DepartmentSetHead, DepartmentCompanyAssign,
     ProjectCreate, ProjectOut,
     CostTypeOut, StatusOut,
     EmployeeCreate, EmployeeOut,
@@ -251,10 +251,14 @@ def dashboard(db: Session = Depends(get_db)):
     )
 
 
-# ── Organisations ─────────────────────────────────────────────────────────────
-@app.get("/api/organisations", response_model=List[OrganisationOut])
-def list_organisations(db: Session = Depends(get_db)):
-    return db.query(Organisation).all()
+# ── Companies ─────────────────────────────────────────────────────────────────
+# Read-only here — Company is owned by backend_java (/api/mm/companies is the real CRUD
+# surface). Exposed under /api/budget so the Department "Assigned Companies" UI, which
+# already talks to WorkFlow for everything else department-related, can fetch it without
+# a second backend round-trip.
+@app.get("/api/companies", response_model=List[CompanyOut])
+def list_companies(db: Session = Depends(get_db)):
+    return db.query(Company).all()
 
 
 # ── Departments ───────────────────────────────────────────────────────────────
@@ -268,8 +272,10 @@ def create_department(body: DepartmentCreate, db: Session = Depends(get_db)):
     # dedicated /set-head endpoint below, once the department (and its head's Employee row,
     # if new) actually exist. Referencing body.head_employee_code here always 500'd since
     # the field was never on the schema in the first place.
+    # No company is assigned at creation time either — a department can exist unassigned
+    # and gets linked to one or more companies later via the assign/unassign endpoints below.
     dept = Department(dept_code=_uid("DEPT-"), name=body.name, dept_name=body.name,
-                       org_code=body.org_code, wbs=body.wbs)
+                       wbs=body.wbs)
     db.add(dept); db.commit(); db.refresh(dept)
     return dept
 
@@ -279,6 +285,22 @@ def set_department_head(dept_code: str, body: DepartmentSetHead, db: Session = D
     if body.head_employee_code:
         _get_or_404(db, Employee, body.head_employee_code, "employee_code", "Employee")
     dept.head_employee_code = body.head_employee_code
+    db.commit(); db.refresh(dept)
+    return dept
+
+@app.post("/api/departments/{dept_code}/companies", response_model=DepartmentOut, status_code=201)
+def assign_department_company(dept_code: str, body: DepartmentCompanyAssign, db: Session = Depends(get_db)):
+    dept = _get_or_404(db, Department, dept_code, "dept_code", "Department")
+    company = _get_or_404(db, Company, body.company_code, "company_code", "Company")
+    if company not in dept.companies:
+        dept.companies.append(company)
+        db.commit(); db.refresh(dept)
+    return dept
+
+@app.delete("/api/departments/{dept_code}/companies/{company_code}", response_model=DepartmentOut)
+def unassign_department_company(dept_code: str, company_code: str, db: Session = Depends(get_db)):
+    dept = _get_or_404(db, Department, dept_code, "dept_code", "Department")
+    dept.companies = [c for c in dept.companies if c.company_code != company_code]
     db.commit(); db.refresh(dept)
     return dept
 
@@ -1334,7 +1356,7 @@ def download_budget_template(db: Session = Depends(get_db)):
 
     # Fixed headers (Columns A to N)
     fixed_headers = [
-        "Line ID", "Organisation", "Department", "Project Code", "Project",
+        "Line ID", "Company", "Department", "Project Code", "Project",
         "Activity", "Sub Activity 1", "Sub Activity 2", "Sub Activity 3",
         "WBS", "Cost Type", "Owner (Employee)", "Employee Code", "Status"
     ]

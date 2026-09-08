@@ -557,7 +557,7 @@ models.py — SQLAlchemy ORM models.
 # pyrefly: ignore [missing-import]
 from sqlalchemy import (
     Column, String, Integer, SmallInteger, Date, DateTime, Text,
-    ForeignKey, UniqueConstraint, CheckConstraint, Index
+    ForeignKey, UniqueConstraint, CheckConstraint, Index, Table
 )
 # pyrefly: ignore [missing-import]
 from sqlalchemy.orm import DeclarativeBase, relationship
@@ -565,16 +565,32 @@ from datetime import datetime
 
 
 
-# ── Organisation ──────────────────────────────────────────────────────────────
-class Organisation(Base):
-    __tablename__ = "organisation"
+# Many-to-many join: a department can be assigned to zero, one, or several companies,
+# independently of when it's created (assignment happens later via the Assigned
+# Departments tab, not at department-creation time). Defined ahead of Company/Department so
+# both relationship()s below can reference the Table object directly — Base.metadata has an
+# explicit schema (see database.py), which makes the usual secondary="department_company"
+# string form fail to resolve (it registers as "multimedia_governance.department_company").
+department_company = Table(
+    "department_company", Base.metadata,
+    Column("dept_code",    String(20), ForeignKey("department.dept_code"),  primary_key=True),
+    Column("company_code", String(4),  ForeignKey("company.company_code"), primary_key=True),
+)
 
-    org_code      = Column(String(20),  primary_key=True)
-    name          = Column(String(120), nullable=False)
-    base_currency = Column(String(3),   nullable=False, default="INR")
-    fiscal_year   = Column(String(20),  nullable=False)
 
-    departments = relationship("Department", back_populates="organisation")
+# ── Company ───────────────────────────────────────────────────────────────────
+# Mapped read/join access to backend_java's `company` table (SAP-style company code — see
+# entity/Company.java). backend_java remains the owner of this table; WorkFlow only needs it
+# to join through department_company above.
+class Company(Base):
+    __tablename__ = "company"
+
+    company_code = Column(String(4),   primary_key=True)
+    company_name = Column(String(100), nullable=False)
+    gst_number   = Column(String(15),  nullable=True)
+
+    departments = relationship("Department", secondary=department_company,
+                                back_populates="companies")
 
 
 # ── Department ────────────────────────────────────────────────────────────────
@@ -593,15 +609,19 @@ class Department(Base):
     # sync with `name` on write (see create_department) so backend_java's own /api/departments
     # (used by User Management's department picker) sees a real value instead of NULL.
     dept_name         = Column(String(120), nullable=False)
-    org_code          = Column(String(20),  ForeignKey("organisation.org_code"), nullable=False)
     wbs               = Column(String(20),  nullable=False)
     head_employee_code = Column(String(20), ForeignKey("employee.employee_code"), nullable=True)
 
-    organisation = relationship("Organisation", back_populates="departments")
+    companies    = relationship("Company", secondary=department_company,
+                                back_populates="departments")
     projects     = relationship("Project",      back_populates="department")
     employees    = relationship("Employee",     back_populates="department",
                                 foreign_keys="Employee.dept_code")
     head         = relationship("Employee",     foreign_keys=[head_employee_code])
+
+    @property
+    def company_codes(self):
+        return [c.company_code for c in self.companies]
 
 
 # ── Project ───────────────────────────────────────────────────────────────────
