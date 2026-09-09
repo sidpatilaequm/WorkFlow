@@ -35,7 +35,7 @@ def upgrade() -> None:
             is_active       TINYINT(1)   NOT NULL DEFAULT 1,
             last_sent_at    DATETIME     NULL,
             last_error      VARCHAR(500) NULL,
-            created_by      INT          NULL,
+            created_by      BIGINT       NULL,
             created_at      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (id),
             CONSTRAINT fk_report_schedules_created_by

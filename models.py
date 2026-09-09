@@ -1183,6 +1183,6 @@ class ReportSchedule(Base):
     is_active = Column(Boolean, nullable=False, default=True)
     last_sent_at = Column(DateTime, nullable=True)
     last_error = Column(String(500), nullable=True)
-    created_by = Column(Integer, ForeignKey("user_details.user_id"), nullable=True)
+    created_by = Column(BigInteger, ForeignKey("user_details.user_id"), nullable=True)
     created_at = Column(DateTime, server_default=func.now())
 
