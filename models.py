@@ -1157,3 +1157,32 @@ class OrgConfig(Base):
     credit_notes_enabled = Column(Boolean, default=True)
     budgeting_enabled = Column(Boolean, default=True)
 
+
+class ReportSchedule(Base):
+    """A recurring "email this report" send for an analytics (NexD Designer)
+    report. The report itself — its definition, its published link — lives
+    entirely in the separate analytics service/DB; this table only stores
+    which published link (process_key + token + role) to re-render, who to
+    send it to, and how often. interval_hours follows the same convention
+    the reminder/scheduled-message tables above use (a plain hour count
+    rather than a cron string) — 24 for daily, 168 for weekly, etc.
+    services/report_schedules.py checks this on an interval and, for
+    anything due, calls analytics' POST /api/r/<key>/<token>/email once per
+    recipient — the exact same render+send path a human clicking "Email
+    report" in NexD Designer goes through."""
+    __tablename__ = "report_schedules"
+
+    id = Column(Integer, primary_key=True, index=True)
+    process_key = Column(String(64), nullable=False)
+    token = Column(String(64), nullable=False)
+    role = Column(String(32), nullable=False, default="")
+    report_name = Column(String(190), nullable=False, default="")
+    recipients = Column(JSON, nullable=False)
+    interval_hours = Column(Integer, nullable=False, default=24)
+    message = Column(String(500), nullable=False, default="")
+    is_active = Column(Boolean, nullable=False, default=True)
+    last_sent_at = Column(DateTime, nullable=True)
+    last_error = Column(String(500), nullable=True)
+    created_by = Column(Integer, ForeignKey("user_details.user_id"), nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+

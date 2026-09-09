@@ -44,7 +44,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session, joinedload
 
 
-from routers import workflows, requests, stages, approvals, analytics, auth, onboarding_dashboard, reports, email_templates
+from routers import workflows, requests, stages, approvals, analytics, auth, onboarding_dashboard, reports, email_templates, report_schedules
 from database import get_db, init_db
 from models import (
     Company, Department, Project, CostType, Status,
@@ -83,6 +83,14 @@ app.add_middleware(
 @app.on_event("startup")
 def on_startup():
     init_db()
+    from services.report_schedules import start_scheduler
+    start_scheduler()
+
+
+@app.on_event("shutdown")
+def on_shutdown():
+    from services.report_schedules import stop_scheduler
+    stop_scheduler()
 
 import routers.onboarding_dashboard as onboarding_dashboard
 import routers.vendors as vendors
@@ -1482,6 +1490,7 @@ app.include_router(stages.router,     prefix="/api/stages",    tags=["Stages"])
 app.include_router(approvals.router,  prefix="/api/approvals", tags=["Approvals"])
 app.include_router(analytics.router,  prefix="/api/analytics", tags=["Analytics"])
 app.include_router(email_templates.router, prefix="/api/email-templates", tags=["Email Templates"])
+app.include_router(report_schedules.router, prefix="/api/report-schedules", tags=["Report Schedules"])
 app.include_router(reports.router)
 app.include_router(vendor_materials.router)
 

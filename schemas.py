@@ -892,3 +892,47 @@ class EmailTemplateTriggerRequest(BaseModel):
     tone_override: Optional[str] = None
     # Base64-encoded files to attach — e.g. the analytics service's generated PDF report.
     attachments: Optional[List[EmailTemplateAttachment]] = None
+
+
+class AvailableReportOut(BaseModel):
+    """One row from analytics' GET /api/internal/reports — a live published
+    report link, for the "pick a report" dropdown when creating a schedule."""
+    process_key: str
+    report_name: str
+    token: str
+    role: str
+
+
+class ReportScheduleCreate(BaseModel):
+    process_key: str
+    token: str
+    role: str = ""
+    report_name: str = ""
+    recipients: List[EmailStr]
+    interval_hours: int = 24
+    message: str = ""
+
+
+class ReportScheduleUpdate(BaseModel):
+    recipients: Optional[List[EmailStr]] = None
+    interval_hours: Optional[int] = None
+    message: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+class ReportScheduleOut(BaseModel):
+    id: int
+    process_key: str
+    token: str
+    role: str
+    report_name: str
+    recipients: List[str]
+    interval_hours: int
+    message: str
+    is_active: bool
+    last_sent_at: Optional[datetime] = None
+    last_error: Optional[str] = None
+    created_by: Optional[int] = None
+    created_at: Optional[datetime] = None
+    class Config:
+        from_attributes = True
