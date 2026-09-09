@@ -54,6 +54,7 @@ def send_scheduled_reports(db=None) -> None:
 
         for sched in due:
             errors = []
+            successes = 0
             for email in (sched.recipients or []):
                 try:
                     resp = httpx.post(
@@ -65,15 +66,25 @@ def send_scheduled_reports(db=None) -> None:
                     if not resp.json().get("success"):
                         raise RuntimeError(resp.json().get("error", "unknown error"))
                     logger.info("Schedule %s: sent to %s", sched.id, email)
+                    successes += 1
                 except Exception as exc:
                     logger.error("Schedule %s: failed for %s — %s", sched.id, email, exc)
                     errors.append(f"{email}: {exc}")
 
-            # Advance last_sent_at regardless of per-recipient failures, so one bad
-            # address doesn't retry every check cycle and spam the working ones —
-            # last_error records what happened for the admin to see.
-            sched.last_sent_at = now
             sched.last_error = "; ".join(errors)[:500] if errors else None
+            if successes > 0:
+                # At least one recipient actually got it — advance so we don't resend to them;
+                # last_error still shows which addresses failed, for the admin to see.
+                sched.last_sent_at = now
+            else:
+                # Total failure (e.g. analytics unreachable) — deliberately do NOT advance
+                # last_sent_at. Previously this always advanced, which meant one transient
+                # failure silently pushed the retry a full interval_hours into the future
+                # instead of the next 15-minute check — indistinguishable from "goes out late"
+                # with no error ever surfaced (nothing here was even logged until the
+                # logging config fix in main.py). Leaving it unset makes this schedule due
+                # again next check, same as a fresh schedule.
+                logger.error("Schedule %s: every recipient failed, will retry next check", sched.id)
             if owns_session:
                 db.add(sched)
 

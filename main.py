@@ -30,9 +30,18 @@ PATCH /api/budget-uploads/{id}/decide   ← department head approves/rejects —
 
 # from Workflow import models
 import random, string, io, json
+import logging
 from datetime import date, datetime
 from typing import List, Optional
 import requests
+
+# No logging was configured anywhere in this app, so every logger.info()/logger.error() call
+# outside uvicorn's own access/error loggers was silently dropped (root logger's default level
+# is WARNING with no handler, so even ERROR-level calls only reached the bare "last resort"
+# fallback inconsistently). This made services/report_schedules.py's own success/failure logging
+# invisible — traced while investigating why a scheduled report went out late with zero trace in
+# journalctl. INFO here also surfaces routine job activity, not just errors.
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
 # pyrefly: ignore [missing-import]
 from fastapi import FastAPI, Depends, HTTPException, Query, UploadFile, File, Form
