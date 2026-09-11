@@ -973,21 +973,6 @@ class VendorAddress(Base):
 # pyrefly: ignore [missing-import]
 from sqlalchemy import BigInteger, Numeric
 
-class PurchaseOrder(Base):
-    __tablename__ = "purchase_orders"
-    id = Column(BigInteger, primary_key=True, index=True)
-    po_number = Column(String(50), index=True)
-    vendor_id = Column(BigInteger)
-    vendor_name = Column(String(255))
-    company_code = Column(String(20))
-    company_name = Column(String(200))
-    po_type = Column(String(50))
-    currency = Column(String(20))
-    total_value = Column(Numeric(15, 2))
-    net_value = Column(Numeric(15, 2))
-    status = Column(String(50))
-    created_date = Column(DateTime)
-
 class PurchaseRequisition(Base):
     __tablename__ = "purchase_requisitions"
     id = Column(BigInteger, primary_key=True, autoincrement=True)
