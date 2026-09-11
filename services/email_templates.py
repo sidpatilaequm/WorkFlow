@@ -68,6 +68,63 @@ def _paragraphs(text: Optional[str], variables: dict) -> str:
     return "".join(out)
 
 
+def _render_table_blocks(table_blocks: Optional[list], v: dict) -> tuple[str, list[str]]:
+    """Expands each table_blocks entry (see models.py EmailTemplate.table_blocks) into an HTML
+    block plus the matching plain-text lines. A block whose list_variable isn't present in `v`
+    (or isn't a non-empty list) is silently omitted — same forgiving philosophy as
+    template_utils.render_template's unknown-placeholder handling, so a trigger call site that
+    didn't populate a given list just doesn't get that table, rather than the whole send failing."""
+    html_parts: list[str] = []
+    text_lines: list[str] = []
+    for block in (table_blocks or []):
+        if not block:
+            continue
+        rows = v.get(block.get("list_variable"))
+        if not isinstance(rows, list) or not rows:
+            continue
+        columns = block.get("columns") or []
+        if not columns:
+            continue
+
+        title = render_template(block.get("title"), v) if block.get("title") else None
+        header_html = "".join(
+            f'<th style="font-family:{_MONO};font-size:11px;letter-spacing:.06em;text-transform:uppercase;'
+            f'color:#5c6e7e;text-align:left;padding:6px 12px 6px 0;border-bottom:1px solid #d3dde5;">'
+            f'{_esc(render_template(col.get("header"), v))}</th>'
+            for col in columns
+        )
+        body_html = ""
+        for row in rows:
+            row_scope = {**v, **row} if isinstance(row, dict) else v
+            cells = "".join(
+                f'<td style="font-family:{_FONT};font-size:13px;color:#15222e;padding:6px 12px 6px 0;'
+                f'border-bottom:1px solid #eef2f6;">{_esc(render_template(col.get("value_template"), row_scope))}</td>'
+                for col in columns
+            )
+            body_html += f"<tr>{cells}</tr>"
+
+        title_html = (
+            f'<p style="font-family:{_FONT};font-size:13px;font-weight:600;color:#15222e;margin:0 0 8px;">{_esc(title)}</p>'
+            if title else ""
+        )
+        html_parts.append(
+            f'<tr><td style="padding:0 32px 20px;">{title_html}'
+            f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">'
+            f'<tr>{header_html}</tr>{body_html}</table>'
+            f'</td></tr>'
+        )
+
+        if title:
+            text_lines.append(title)
+        for row in rows:
+            row_scope = {**v, **row} if isinstance(row, dict) else v
+            for col in columns:
+                text_lines.append(f'{render_template(col.get("header"), v)}: {render_template(col.get("value_template"), row_scope)}')
+            text_lines.append("")
+
+    return "".join(html_parts), text_lines
+
+
 def render_email_template(template: "models.EmailTemplate", variables: dict, tone_override: Optional[str] = None) -> tuple[str, str, str]:
     """Returns (subject, html_body, text_body) for one EmailTemplate row,
     rendering every {{merge_tag}} field against `variables` merged with the
@@ -111,6 +168,8 @@ def render_email_template(template: "models.EmailTemplate", variables: dict, ton
         f'<table role="presentation" cellpadding="0" cellspacing="0" border="0">{details_html}</table>'
         f'</td></tr></table></td></tr>'
     ) if details_html else ""
+
+    table_blocks_html, table_blocks_text_lines = _render_table_blocks(template.table_blocks, v)
 
     cta_label = render_template(template.cta_label, v) if template.cta_label else None
     cta_url = render_template(template.cta_url, v) if template.cta_url else None
@@ -173,6 +232,7 @@ def render_email_template(template: "models.EmailTemplate", variables: dict, ton
     </td></tr>
 
     {detail_block}
+    {table_blocks_html}
     {cta_block}
 
     <tr><td style="padding:0 32px 8px;">{_paragraphs(template.outro, v)}</td></tr>
@@ -191,6 +251,8 @@ def render_email_template(template: "models.EmailTemplate", variables: dict, ton
     text_lines += ["", render_template(template.intro, v) or "", ""]
     for k, val in rows:
         text_lines.append(f"{render_template(k, v)}: {render_template(val, v)}")
+    if table_blocks_text_lines:
+        text_lines += ["", *table_blocks_text_lines]
     if cta_label and cta_url:
         text_lines += ["", f"{cta_label.upper()}: {cta_url}"]
     text_lines += ["", render_template(template.outro, v) or "", "", "---", render_template(foot_text, v) or ""]

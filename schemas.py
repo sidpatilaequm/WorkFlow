@@ -799,6 +799,18 @@ class EmailFooterUpdate(BaseModel):
     reason_text: Optional[str] = None
     legal_line: Optional[str] = None
 
+class EmailTableColumn(BaseModel):
+    header: str
+    value_template: str
+
+class EmailTableBlock(BaseModel):
+    """A dynamic table — list_variable names the runtime variable (in the trigger's `variables`
+    payload, or sample_data for preview) holding the list of row dicts; each column's
+    value_template is rendered per-row against that row merged with the global/scalar variables."""
+    list_variable: str
+    title: Optional[str] = None
+    columns: List[EmailTableColumn] = []
+
 class EmailTemplateCreate(BaseModel):
     """Just enough to store a new template row and hand back its id — everything
     else (subject wording, body, footer, ...) is filled in afterward through the
@@ -824,6 +836,7 @@ class EmailTemplateOut(BaseModel):
     heading: str
     intro: Optional[str] = None
     detail_rows: Optional[List[List[str]]] = None
+    table_blocks: Optional[List[EmailTableBlock]] = None
     cta_label: Optional[str] = None
     cta_url: Optional[str] = None
     outro: Optional[str] = None
@@ -846,6 +859,7 @@ class EmailTemplateUpdate(BaseModel):
     heading: Optional[str] = None
     intro: Optional[str] = None
     detail_rows: Optional[List[List[str]]] = None
+    table_blocks: Optional[List[EmailTableBlock]] = None
     cta_label: Optional[str] = None
     cta_url: Optional[str] = None
     outro: Optional[str] = None
