@@ -511,6 +511,11 @@ class EmailTemplate(Base):
     heading                 = Column(String(300), nullable=False)
     intro                   = Column(Text, nullable=True)
     detail_rows             = Column(JSON, nullable=True)   # [[label, value_template], ...]
+    # [{"list_variable": "line_items", "title": "Line Items",
+    #   "columns": [{"header": "Item", "value_template": "{{sku}}"}, ...]}, ...]
+    # Unlike detail_rows (fixed row count), the row count comes from len(variables[list_variable])
+    # at send time — see render_email_template's table-block loop in services/email_templates.py.
+    table_blocks             = Column(JSON, nullable=True)
     cta_label                = Column(String(100), nullable=True)
     cta_url                  = Column(String(500), nullable=True)
     outro                    = Column(Text, nullable=True)

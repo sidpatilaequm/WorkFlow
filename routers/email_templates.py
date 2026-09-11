@@ -89,7 +89,31 @@ def _used_placeholders(fields: dict) -> set:
         if row:
             for cell in row:
                 used |= extract_placeholders(cell)
+    # table_blocks' title renders once per email against the top-level variables, same as
+    # heading/intro above — only each column's value_template is row-scoped (see
+    # _used_row_placeholders below).
+    for block in (fields.get("table_blocks") or []):
+        if block:
+            used |= extract_placeholders(block.get("title"))
     return used
+
+
+def _used_row_placeholders(fields: dict) -> dict:
+    """{list_variable: set-of-placeholder-names} used across each table block's columns — these
+    are checked against that list_variable's sample rows, not the top-level Sample data dict."""
+    out: dict = {}
+    for block in (fields.get("table_blocks") or []):
+        if not block:
+            continue
+        list_variable = block.get("list_variable")
+        if not list_variable:
+            continue
+        names = out.setdefault(list_variable, set())
+        for col in (block.get("columns") or []):
+            if col:
+                names |= extract_placeholders(col.get("header"))
+                names |= extract_placeholders(col.get("value_template"))
+    return out
 
 
 def _same_moment(a, b) -> bool:
@@ -203,6 +227,25 @@ def update_template(
             f"live email instead of a real value: {', '.join(sorted(unknown))}. Add them to "
             "Sample data with an example value, or fix the typo.",
         )
+
+    # Same check for table-block columns, but scoped per list_variable: a column can reference
+    # either that list_variable's own sample row keys or a top-level scalar Sample data value
+    # (e.g. a shared currency code) — the real render merges both (see _render_table_blocks).
+    scalar_keys = set(sample_data.keys()) | _GLOBAL_VARIABLES
+    for list_variable, names in _used_row_placeholders(merged).items():
+        sample_rows = sample_data.get(list_variable) or []
+        row_keys = set()
+        for r in sample_rows:
+            if isinstance(r, dict):
+                row_keys |= set(r.keys())
+        unknown_row = names - row_keys - scalar_keys
+        if unknown_row:
+            raise HTTPException(
+                400,
+                f"Table '{list_variable}': these placeholders aren't in that table's sample rows "
+                f"or Sample data: {', '.join(sorted(unknown_row))}. Add a sample row with an "
+                "example value for each, or fix the typo.",
+            )
 
     # Snapshot the row as it stood right before this edit overwrites it.
     db.add(models.EmailTemplateRevision(
